@@ -1,4 +1,5 @@
 import type { Editor, MarkdownView, WorkspaceLeaf, Workspace, EditorPosition } from 'obsidian';
+import { Component } from 'obsidian';
 import { createTallyState, type TallyState } from './tally-state';
 import { createTallyRenderer, type TallyRenderer } from './renderer';
 import type { Settings } from './settings';
@@ -48,42 +49,6 @@ function isTallyControlKey(e: KeyboardEvent): boolean {
   return e.key === ' ' || e.key === 'Spacebar' || e.key === 'Backspace' || e.key === 'Enter' || e.key === 'Escape';
 }
 
-interface OffableEventRef {
-  off(): void;
-}
-
-interface LifecycleHandle {
-  registerEvent(eventRef: OffableEventRef): void;
-  registerDomEvent(el: EventTarget, type: string, handler: EventListener, options?: boolean | AddEventListenerOptions): void;
-  unload(): void;
-}
-
-function createLifecycleManager(): LifecycleHandle {
-  const registeredEvents: OffableEventRef[] = [];
-  const registeredDomEvents: Array<{ el: EventTarget; type: string; handler: EventListener; options?: boolean | AddEventListenerOptions }> = [];
-
-  return {
-    registerEvent(eventRef: OffableEventRef): void {
-      registeredEvents.push(eventRef);
-    },
-    registerDomEvent(el: EventTarget, type: string, handler: EventListener, options?: boolean | AddEventListenerOptions): void {
-      el.addEventListener(type, handler, options);
-      registeredDomEvents.push({ el, type, handler, options });
-    },
-    unload(): void {
-      for (const eventRef of registeredEvents) {
-        eventRef.off();
-      }
-      registeredEvents.length = 0;
-
-      for (const { el, type, handler, options } of registeredDomEvents) {
-        el.removeEventListener(type, handler, options);
-      }
-      registeredDomEvents.length = 0;
-    },
-  };
-}
-
 export function createEditorSession(deps: SessionDependencies): EditorSession {
   const { editor, view, leaf, workspace, settings, onSessionEnd } = deps;
   let state: TallyState | null = null;
@@ -94,7 +59,10 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
   let cursorPos: { left: number; top: number; bottom: number } | null = null;
   let capturedCursor: EditorPosition | null = null;
 
-  const lifecycle = createLifecycleManager();
+  const component = new (class extends Component {
+    // Do not call cleanup() here to avoid circular dependency
+    // cleanup() will call component.unload() to clean up registered events
+  })();
 
   function cleanup(): void {
     if (isActive) {
@@ -106,7 +74,7 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
       keydownHandler = null;
     }
 
-    lifecycle.unload();
+    component.unload();
 
     if (renderer) {
       renderer.destroy();
@@ -222,10 +190,10 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
       });
 
       keydownHandler = handleKeydown;
-      lifecycle.registerDomEvent(window, 'keydown', keydownHandler as EventListener, true);
+      component.registerDomEvent(window, 'keydown', keydownHandler, true);
 
-      const leafChangeEventRef = workspace.on('active-leaf-change', handleLeafChange) as OffableEventRef;
-      lifecycle.registerEvent(leafChangeEventRef);
+      const leafChangeEventRef = workspace.on('active-leaf-change', handleLeafChange);
+      component.registerEvent(leafChangeEventRef);
 
       isActive = true;
       return true;
