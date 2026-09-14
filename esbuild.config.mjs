@@ -1,4 +1,4 @@
-import { build } from 'esbuild';
+import { build, context } from 'esbuild';
 import { copyFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -12,7 +12,7 @@ async function buildPlugin() {
   if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
 
   if (isWatch) {
-    const ctx = await build({
+    const ctx = await context({
       entryPoints: [join(__dirname, 'src/main.ts')],
       bundle: true,
       outfile: join(outDir, 'main.js'),
@@ -24,6 +24,7 @@ async function buildPlugin() {
       minify: isProduction,
     });
     await ctx.watch();
+    copyFileSync(join(__dirname, 'manifest.json'), join(outDir, 'manifest.json'));
     console.log('Watching for changes...');
   } else {
     await build({

@@ -6,7 +6,7 @@ Chinese 正字 tally counting in the Obsidian Markdown editor.
 
 ### From release (recommended)
 1. Download the latest `main.js` and `manifest.json` from [Releases](https://github.com/yunmin311/zheng-tally-obsidian/releases)
-2. Place them in `<vault>/.obsidian/plugins/zheng-tally-obsidian/`
+2. Place them in `<vault>/.obsidian/plugins/zheng-tally/`
 3. Enable the plugin in Settings → Community plugins
 
 ### From source
@@ -43,14 +43,17 @@ General rule: `floor(count/5)` copies of `正`, plus `·N` for remainder when `c
 
 ### Experimental Unicode output format
 
-Enable in plugin settings (`commitFormat: "unicode"`). Uses Unicode tally glyphs U+1D372–U+1D376:
+Enable in plugin settings (`commitFormat: "unicode"`). Uses Unicode Ideographic Tally Marks U+1D372–U+1D376:
 
 | Count | Output |
 |-------|--------|
-| 1 | `𝍡` |
-| 5 | `𝍥` |
-| 6 | `𝍥𝍡` |
-| 18 | `𝍥𝍥𝍥𝍣` |
+| 1 | `𝍲` |
+| 2 | `𝍳` |
+| 3 | `𝍴` |
+| 4 | `𝍵` |
+| 5 | `𝍶` |
+| 6 | `𝍶𝍲` |
+| 18 | `𝍶𝍶𝍶𝍴` |
 
 > **Warning**: Font support for these glyphs is unreliable. This mode is opt-in only.
 
