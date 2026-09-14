@@ -9,7 +9,7 @@ export interface TallyState {
   toUnicodeText(): string;
 }
 
-const UNICODE_TALLY = ['', '𝍡', '𝍢', '𝍣', '𝍤', '𝍥'] as const;
+const UNICODE_TALLY = ['', '\u{1D372}', '\u{1D373}', '\u{1D374}', '\u{1D375}', '\u{1D376}'] as const;
 
 export function createTallyState(initialCount = 0): TallyState {
   let count = Math.max(0, Math.floor(initialCount));
