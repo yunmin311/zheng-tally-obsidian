@@ -63,6 +63,7 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
     // Do not call cleanup() here to avoid circular dependency
     // cleanup() will call component.unload() to clean up registered events
   })();
+  component.load();
 
   function cleanup(): void {
     if (isActive) {
