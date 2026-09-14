@@ -404,8 +404,22 @@ describe('EditorSession integration', () => {
   });
 
   test('Fail-closed: renderer mount failure cleans up and does not leave overlay/listeners', () => {
+    // Create a failing renderer that throws on mount
+    jest.doMock('../src/renderer', () => ({
+      createTallyRenderer: () => ({
+        mount: jest.fn(() => { throw new Error('mount failed'); }),
+        update: jest.fn(),
+        onClick: jest.fn(),
+        destroy: jest.fn(),
+      }),
+    }));
+
+    // Re-import the module to get the mocked version
+    jest.resetModules();
+    const { createEditorSession: createEditorSessionMock } = require('../src/editor-session');
+
     let sessionEnded = false;
-    const session = createEditorSession({
+    const session = createEditorSessionMock({
       editor: mockEditor,
       view: mockView,
       leaf: mockLeaf,
@@ -414,11 +428,23 @@ describe('EditorSession integration', () => {
       onSessionEnd: () => { sessionEnded = true; },
     });
 
-    expect(() => session.start()).not.toThrow();
-    session.destroy();
+    // start() should return false and not throw
+    const result = session.start();
+    expect(result).toBe(false);
 
+    // Cleanup should have been called
     expect(sessionEnded).toBe(true);
+
+    // No overlay should remain
     expect(document.querySelector('.zheng-tally-overlay')).toBeNull();
+
+    // No container should remain (overlay container should also be cleaned up)
+    // The overlay container is a parent of the overlay, so if overlay is null, container should also be gone
+    expect(document.body.querySelector('div > .zheng-tally-overlay')).toBeNull();
+
+    // Restore mocks
+    jest.dontMock('../src/renderer');
+    jest.resetModules();
   });
 
   test('Fail-closed: state-4 canvas failure falls back to [4] without crashing session', () => {
