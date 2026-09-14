@@ -71,18 +71,43 @@ describe('TallyState', () => {
   });
 
   describe('toUnicodeText', () => {
+    const TALLY_1 = '\u{1D372}'; // 𝍲
+    const TALLY_2 = '\u{1D373}'; // 𝍳
+    const TALLY_3 = '\u{1D374}'; // 𝍴
+    const TALLY_4 = '\u{1D375}'; // 𝍵
+    const TALLY_5 = '\u{1D376}'; // 𝍶
+
     const cases: [number, string][] = [
       [0, ''],
-      [1, '𝍡'],
-      [4, '𝍤'],
-      [5, '𝍥'],
-      [6, '𝍥𝍡'],
-      [18, '𝍥𝍥𝍥𝍣'],
-      [25, '𝍥𝍥𝍥𝍥𝍥'],
+      [1, TALLY_1],
+      [2, TALLY_2],
+      [3, TALLY_3],
+      [4, TALLY_4],
+      [5, TALLY_5],
+      [6, TALLY_5 + TALLY_1],
+      [18, TALLY_5.repeat(3) + TALLY_3],
+      [25, TALLY_5.repeat(5)],
     ];
 
     test.each(cases)('%d → "%s"', (input, expected) => {
       expect(createTallyState(input).toUnicodeText()).toBe(expected);
+    });
+
+    test('unicode tally marks have correct code points', () => {
+      expect(TALLY_1.codePointAt(0)).toBe(0x1D372);
+      expect(TALLY_2.codePointAt(0)).toBe(0x1D373);
+      expect(TALLY_3.codePointAt(0)).toBe(0x1D374);
+      expect(TALLY_4.codePointAt(0)).toBe(0x1D375);
+      expect(TALLY_5.codePointAt(0)).toBe(0x1D376);
+    });
+
+    test('toUnicodeText output characters have correct code points', () => {
+      const output = createTallyState(18).toUnicodeText();
+      // Each tally char is a surrogate pair (2 code units), so indices are 0, 2, 4, 6
+      expect(output.codePointAt(0)).toBe(0x1D376); // first 正
+      expect(output.codePointAt(2)).toBe(0x1D376); // second 正
+      expect(output.codePointAt(4)).toBe(0x1D376); // third 正
+      expect(output.codePointAt(6)).toBe(0x1D374); // remainder 3
     });
   });
 });

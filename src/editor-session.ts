@@ -1,7 +1,11 @@
-import type { Editor, MarkdownView, WorkspaceLeaf, Workspace, EventRef } from 'obsidian';
+import type { Editor, MarkdownView, WorkspaceLeaf, Workspace, EditorPosition } from 'obsidian';
 import { createTallyState, type TallyState } from './tally-state';
 import { createTallyRenderer, type TallyRenderer } from './renderer';
 import type { Settings } from './settings';
+
+interface ObsidianEventRef {
+  off(): void;
+}
 
 interface CodeMirrorEditor {
   coordsAtPos(pos: { line: number; ch: number }): { left: number; top: number; bottom: number };
@@ -36,28 +40,28 @@ function getCursorScreenPosition(editor: Editor): { left: number; top: number; b
   };
 }
 
+function isSystemKey(e: KeyboardEvent): boolean {
+  return e.ctrlKey || e.altKey || e.metaKey || e.shiftKey;
+}
+
+function isPrintableKey(e: KeyboardEvent): boolean {
+  return e.key.length === 1 && !isSystemKey(e);
+}
+
+function isTallyControlKey(e: KeyboardEvent): boolean {
+  return e.key === ' ' || e.key === 'Spacebar' || e.key === 'Backspace' || e.key === 'Enter' || e.key === 'Escape';
+}
+
 export function createEditorSession(deps: SessionDependencies): EditorSession {
   const { editor, view, leaf, workspace, settings, onSessionEnd } = deps;
   let state: TallyState | null = null;
   let renderer: TallyRenderer | null = null;
   let overlayContainer: HTMLElement | null = null;
   let keydownHandler: ((e: KeyboardEvent) => void) | null = null;
-  let leafChangeRef: EventRef | null = null;
+  let leafChangeRef: ObsidianEventRef | null = null;
   let isActive = false;
   let cursorPos: { left: number; top: number; bottom: number } | null = null;
-
-  function commitAndClose(): void {
-    if (!state || !isActive) return;
-    const text = settings.commitFormat === 'unicode' ? state.toUnicodeText() : state.toStableText();
-    if (text) {
-      editor.replaceRange(text, editor.getCursor());
-    }
-    cleanup();
-  }
-
-  function cancelAndClose(): void {
-    cleanup();
-  }
+  let capturedCursor: EditorPosition | null = null;
 
   function cleanup(): void {
     if (!isActive) return;
@@ -68,7 +72,7 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
       keydownHandler = null;
     }
     if (leafChangeRef) {
-      (leafChangeRef as EventRef & { off?: () => void }).off?.();
+      leafChangeRef.off();
       leafChangeRef = null;
     }
     if (renderer) {
@@ -81,34 +85,57 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
     }
     state = null;
     cursorPos = null;
+    capturedCursor = null;
     onSessionEnd();
+  }
+
+  function commitAndClose(): void {
+    if (!state || !isActive || !capturedCursor) {
+      cleanup();
+      return;
+    }
+    const text = settings.commitFormat === 'unicode' ? state.toUnicodeText() : state.toStableText();
+    if (text) {
+      editor.replaceRange(text, capturedCursor);
+    }
+    cleanup();
+  }
+
+  function cancelAndClose(): void {
+    cleanup();
   }
 
   function handleKeydown(e: KeyboardEvent): void {
     if (!isActive || !state) return;
 
-    switch (e.key) {
-      case ' ':
-      case 'Spacebar':
-        e.preventDefault();
-        state.increment();
-        renderer?.update(state.count);
-        break;
-      case 'Backspace':
-        e.preventDefault();
-        state.decrement();
-        renderer?.update(state.count);
-        break;
-      case 'Enter':
-        e.preventDefault();
-        commitAndClose();
-        break;
-      case 'Escape':
-        e.preventDefault();
-        cancelAndClose();
-        break;
-      default:
-        break;
+    if (isTallyControlKey(e)) {
+      e.preventDefault();
+      e.stopPropagation();
+
+      switch (e.key) {
+        case ' ':
+        case 'Spacebar':
+          state.increment();
+          renderer?.update(state.count);
+          break;
+        case 'Backspace':
+          state.decrement();
+          renderer?.update(state.count);
+          break;
+        case 'Enter':
+          commitAndClose();
+          break;
+        case 'Escape':
+          cancelAndClose();
+          break;
+      }
+      return;
+    }
+
+    if (isPrintableKey(e)) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
     }
   }
 
@@ -132,20 +159,26 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
 
       overlayContainer = document.createElement('div');
       document.body.appendChild(overlayContainer);
-      renderer.mount(overlayContainer);
+      try {
+        renderer.mount(overlayContainer);
+      } catch (e) {
+        cleanup();
+        return false;
+      }
 
       cursorPos = getCursorScreenPosition(editor);
+      capturedCursor = editor.getCursor();
 
-      const inner = overlayContainer.querySelector('.zheng-tally-overlay > div') as HTMLElement;
-      if (inner) {
-        const rect = inner.getBoundingClientRect();
+      const overlay = overlayContainer.querySelector('.zheng-tally-overlay') as HTMLElement;
+      if (overlay) {
+        const rect = overlay.getBoundingClientRect();
         const viewportHeight = window.innerHeight;
         let top = cursorPos.bottom + 4;
         if (top + rect.height > viewportHeight - 8) {
           top = cursorPos.top - rect.height - 4;
         }
-        overlayContainer.style.left = `${cursorPos.left}px`;
-        overlayContainer.style.top = `${top}px`;
+        overlay.style.left = `${cursorPos.left}px`;
+        overlay.style.top = `${top}px`;
       }
 
       renderer.onClick(() => {
@@ -158,7 +191,7 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
       keydownHandler = handleKeydown;
       window.addEventListener('keydown', keydownHandler, true);
 
-      leafChangeRef = workspace.on('active-leaf-change', handleLeafChange);
+      leafChangeRef = workspace.on('active-leaf-change', handleLeafChange) as ObsidianEventRef;
 
       isActive = true;
       return true;
