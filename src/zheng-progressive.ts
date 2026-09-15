@@ -106,8 +106,14 @@ export interface ZhengMaskResult {
     leftR: number;
     centralL: number;
     centralR: number;
+    yTop: number;
+    yMid: number;
+    yBot: number;
+    xLeft: number;
+    xCentral: number;
     bbox: { x0: number; x1: number; y0: number; y1: number };
     fractions: number[];
+    strokeFractions: number[];
   };
 }
 
@@ -149,22 +155,37 @@ function argMaxRange(values: number[], lo: number, hi: number): number {
 }
 
 /**
- * Dedicated analysis for the single character 正.
+ * Dedicated analysis for the single character 正 with stroke ownership.
  *
  * Expected stroke order:
  * 1 top horizontal, 2 central vertical, 3 middle horizontal,
  * 4 left vertical, 5 bottom horizontal.
  *
- * Method: horizontal / vertical ink projections of the complete glyph alpha,
- * valley search around expected relative positions, density-threshold band
- * refinement. No large fixed rectangles: cut lines are placed at local minima
- * of the actual raster, and vertical strokes are constrained to detected ink
- * columns so cross-junction pixels of later strokes are not exposed early.
+ * Method: complete glyph alpha -> locate 3 horizontal centers (yTop/yMid/yBot)
+ * and 2 vertical centers (xLeft/xCentral) via ink projections + valley search,
+ * then assign every ink pixel to exactly one stroke by distance to its
+ * centerline segment. Crossings tie-break to the earlier stroke (writing-order
+ * ownership), so future-stroke bodies never leak early. Progressive states are
+ * unions of exclusive stroke masks, not粗 rectangular reveals.
  *
  * Masks are binary selections; original per-pixel alpha (including partial
  * anti-aliased values) is preserved by the caller. Background (alpha 0)
  * is never included.
  */
+function distToHSeg(x: number, y: number, yC: number, xA: number, xB: number): number {
+  const cx = x < xA ? xA : x > xB ? xB : x;
+  const dx = x - cx;
+  const dy = y - yC;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function distToVSeg(x: number, y: number, xC: number, yA: number, yB: number): number {
+  const cy = y < yA ? yA : y > yB ? yB : y;
+  const dx = x - xC;
+  const dy = y - cy;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
 export function analyzeZhengMasks(
   alpha: Uint8Array,
   width: number,
@@ -280,23 +301,54 @@ export function analyzeZhengMasks(
   while (centralR < x1 && sC[centralR + 1] > centralThresh) centralR++;
   if (leftR >= centralL) return { valid: false, reason: 'columns-overlap' };
 
-  const masks: Uint8Array[] = [];
-  for (let k = 0; k < 5; k++) masks.push(new Uint8Array(width * height));
+  // Stroke centerlines from projection peaks (same glyph, exclusive ownership).
+  const yTop = yTopPeak;
+  const yMid = yMidPeak;
+  const yBot = yBotPeak;
+  const xLeft = xLeftPeak;
+  const xCentral = xCentralPeak;
 
+  const strokeOf = new Uint8Array(width * height);
+  const strokeSums = [0, 0, 0, 0, 0];
   for (let y = 0; y < height; y++) {
-    const inTop = y <= gapY1 ? 1 : 0;
-    const inMid = y >= midTop && y <= midBot ? 1 : 0;
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
       if (alpha[idx] === 0) continue;
-      const inCentral = x >= centralL && x <= centralR ? 1 : 0;
-      const inLeftSpine = x >= leftL && x <= leftR && y >= midTop && y <= y1 ? 1 : 0;
-      if (inTop) masks[0][idx] = 1;
-      if (inTop || inCentral) masks[1][idx] = 1;
-      if (inTop || inCentral || inMid) masks[2][idx] = 1;
-      if (inTop || inCentral || inMid || inLeftSpine) masks[3][idx] = 1;
-      masks[4][idx] = 1;
+      const d1 = distToHSeg(x, y, yTop, x0, x1);
+      const d2 = distToVSeg(x, y, xCentral, yTop, yBot);
+      const d3 = distToHSeg(x, y, yMid, x0, x1);
+      const d4 = distToVSeg(x, y, xLeft, yMid, yBot);
+      const d5 = distToHSeg(x, y, yBot, x0, x1);
+      let best = 0;
+      let bestD = d1;
+      if (d2 < bestD - 1e-9) {
+        best = 1;
+        bestD = d2;
+      }
+      if (d3 < bestD - 1e-9) {
+        best = 2;
+        bestD = d3;
+      }
+      if (d4 < bestD - 1e-9) {
+        best = 3;
+        bestD = d4;
+      }
+      if (d5 < bestD - 1e-9) {
+        best = 4;
+        bestD = d5;
+      }
+      strokeOf[idx] = best + 1;
+      strokeSums[best] += alpha[idx];
     }
+  }
+
+  const masks: Uint8Array[] = [];
+  for (let k = 0; k < 5; k++) masks.push(new Uint8Array(width * height));
+
+  for (let i = 0; i < alpha.length; i++) {
+    const s = strokeOf[i];
+    if (s === 0) continue;
+    for (let k = s - 1; k < 5; k++) masks[k][i] = 1;
   }
 
   const sums = masks.map((m) => {
@@ -305,6 +357,7 @@ export function analyzeZhengMasks(
     return s;
   });
   const fractions = sums.map((s) => s / total);
+  const strokeFractions = strokeSums.map((s) => s / total);
   const [f1, f2, f3, f4] = fractions;
   if (!(f1 >= 0.05 && f1 <= 0.6)) return { valid: false, reason: 'bad-f1' };
   if (!(f2 > f1 && f2 >= 0.15 && f2 <= 0.8)) return { valid: false, reason: 'bad-f2' };
@@ -312,6 +365,9 @@ export function analyzeZhengMasks(
   if (!(f4 > f3 && f4 >= 0.5 && f4 <= 0.995)) return { valid: false, reason: 'bad-f4' };
   if (!(f2 - f1 > 0.02 && f3 - f2 > 0.02 && f4 - f3 > 0.02)) {
     return { valid: false, reason: 'stroke-too-small' };
+  }
+  for (const sf of strokeFractions) {
+    if (!(sf >= 0.03 && sf <= 0.6)) return { valid: false, reason: 'bad-stroke-share' };
   }
   // Strict superset check on ink pixels.
   for (let n = 1; n < 5; n++) {
@@ -339,8 +395,14 @@ export function analyzeZhengMasks(
       leftR,
       centralL,
       centralR,
+      yTop,
+      yMid,
+      yBot,
+      xLeft,
+      xCentral,
       bbox: { x0, x1, y0, y1 },
       fractions,
+      strokeFractions,
     },
   };
 }
