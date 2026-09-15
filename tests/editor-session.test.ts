@@ -82,7 +82,16 @@ describe('EditorSession integration', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
 
     const tallyText = document.querySelector('.zheng-tally-overlay span');
-    expect(tallyText?.textContent).toContain('一');
+    // Progressive renderer: state 1 is a canvas from the same 正 glyph,
+    // or explicit [1] fallback in jsdom where Canvas raster is unavailable.
+    // Must never use legacy partial characters.
+    expect(tallyText?.textContent).not.toContain('一');
+    expect(tallyText?.textContent).not.toContain('丁');
+    expect(tallyText?.textContent).not.toContain('下');
+    const host = document.querySelector('.zheng-tally-overlay');
+    const hasCanvas = host?.querySelector('canvas') !== null;
+    const hasFallback = (tallyText?.textContent || '').includes('[1]');
+    expect(hasCanvas || hasFallback).toBe(true);
 
     session.destroy();
   });
@@ -104,7 +113,11 @@ describe('EditorSession integration', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace' }));
 
     const tallyContainer = document.querySelector('.zheng-tally-overlay span');
-    expect(tallyContainer?.textContent).toContain('一');
+    // After 2 increments + 1 decrement, count is 1 -> progressive state 1.
+    expect(tallyContainer?.textContent).not.toContain('一');
+    expect(tallyContainer?.textContent).not.toContain('丁');
+    expect(tallyContainer?.textContent).not.toContain('下');
+    expect(tallyContainer?.textContent).toContain('[1]');
 
     session.destroy();
   });
@@ -228,7 +241,14 @@ describe('EditorSession integration', () => {
     const tallyContainer = document.querySelector('.zheng-tally-overlay span') as HTMLElement;
     const text = tallyContainer?.textContent || '';
     expect(text).toContain('正正正');
-    expect(text).toContain('下');
+    // Progressive state 3 from the same 正 glyph (canvas) or explicit [3]
+    // fallback in jsdom; legacy 下 must never appear.
+    expect(text).not.toContain('下');
+    expect(text).not.toContain('一');
+    expect(text).not.toContain('丁');
+    const overlay = document.querySelector('.zheng-tally-overlay');
+    const partial = overlay?.querySelector('[data-state="3"]');
+    expect(partial).not.toBeNull();
 
     session.destroy();
   });
