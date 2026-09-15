@@ -63,6 +63,7 @@ export interface GlyphCacheEntry {
   height: number;
   alpha: Uint8Array;
   masks: Uint8Array[];
+  alphas: Uint8Array[];
 }
 
 function rasterizeZhengAlpha(
@@ -120,8 +121,8 @@ export function buildGlyphCache(typo: ZhengTypography): GlyphCacheEntry | null {
   const raster = rasterizeZhengAlpha(typo);
   if (!raster) return null;
   const res = analyzeZhengMasks(raster.alpha, raster.width, raster.height);
-  if (!res.valid || !res.masks) return null;
-  return { key, width: raster.width, height: raster.height, alpha: raster.alpha, masks: res.masks };
+  if (!res.valid || !res.masks || !res.alphas) return null;
+  return { key, width: raster.width, height: raster.height, alpha: raster.alpha, masks: res.masks, alphas: res.alphas };
 }
 
 function compositeStateToCanvas(
@@ -132,10 +133,11 @@ function compositeStateToCanvas(
   try {
     if (state < 1 || state > 5) return null;
     const mask = entry.masks[state - 1];
-    if (!mask) return null;
+    const stateAlpha = entry.alphas[state - 1];
+    if (!mask || !stateAlpha) return null;
     const rgb = parseCssColor(color);
     if (!rgb) return null;
-    const rgba = recolorWithMask(entry.alpha, mask, rgb, entry.width, entry.height);
+    const rgba = recolorWithMask(stateAlpha, mask, rgb, entry.width, entry.height);
     const canvas = document.createElement('canvas');
     canvas.width = entry.width;
     canvas.height = entry.height;

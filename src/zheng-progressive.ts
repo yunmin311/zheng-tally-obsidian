@@ -97,6 +97,7 @@ export interface ZhengMaskResult {
   valid: boolean;
   reason?: string;
   masks?: Uint8Array[];
+  alphas?: Uint8Array[];
   meta?: {
     top: [number, number];
     mid: [number, number];
@@ -338,54 +339,136 @@ export function analyzeZhengMasks(
   const lx0 = leftG.a0;
   const lx1 = leftG.a1;
 
-  // Stroke sets: cleaned subsets; junctions surface with the earlier stroke.
-  // Verticals stop above the bottom band (flat stroke endings, no stubs);
-  // the bottom band arrives whole with S5, which restores the full glyph.
-  const inTop = (y: number): boolean => y >= t0 && y <= t1;
-  const inMid = (y: number): boolean => y >= m0 && y <= m1;
-  const inCentral = (x: number, y: number): boolean => x >= cx0 && x <= cx1 && y >= t0 && y < b0;
-  const inLeft = (x: number, y: number): boolean => x >= lx0 && x <= lx1 && y >= lMinY && y < b0;
+  // ---- Stroke reconstruction (independent strokes, explicit junctions) ----
+  // Contaminated x-intervals where strokes merge; margin 1px so flares belong
+  // to no early state. Clean samples come from the same glyph's unmerged runs.
+  const cenX0 = cx0 - 1;
+  const cenX1 = cx1 + 1;
+  const glLeftX0 = lx0 - 1;
+  const glLeftX1 = lx1 + 1;
+  const inBandTop = (y: number): boolean => y >= t0 && y <= t1;
+  const inBandMid = (y: number): boolean => y >= m0 && y <= m1;
 
-  const masks: Uint8Array[] = [];
-  for (let k = 0; k < 5; k++) masks.push(new Uint8Array(width * height));
+  // Per-row clean reference for horizontals: max alpha outside contaminated
+  // intervals on that row (0 when the row offers no clean ink).
+  const refTop = new Uint8Array(height);
+  const refMid = new Uint8Array(height);
+  for (let y = t0; y <= t1; y++) {
+    let m = 0;
+    for (let x = x0; x <= x1; x++) {
+      if (x >= cenX0 && x <= cenX1) continue;
+      const a = alpha[y * width + x];
+      if (a > m) m = a;
+    }
+    refTop[y] = m;
+  }
+  for (let y = m0; y <= m1; y++) {
+    let m = 0;
+    for (let x = x0; x <= x1; x++) {
+      if ((x >= cenX0 && x <= cenX1) || (x >= glLeftX0 && x <= glLeftX1)) continue;
+      const a = alpha[y * width + x];
+      if (a > m) m = a;
+    }
+    refMid[y] = m;
+  }
+  // Per-column clean reference for verticals: max alpha outside band rows.
+  const refCen = new Uint8Array(width);
+  const refLeft = new Uint8Array(width);
+  for (let x = cx0; x <= cx1; x++) {
+    let m = 0;
+    for (let y = t0; y < b0; y++) {
+      if (inBandTop(y) || inBandMid(y)) continue;
+      const a = alpha[y * width + x];
+      if (a > m) m = a;
+    }
+    refCen[x] = m;
+  }
+  for (let x = lx0; x <= lx1; x++) {
+    let m = 0;
+    for (let y = lMinY; y < b0; y++) {
+      if (inBandMid(y)) continue;
+      const a = alpha[y * width + x];
+      if (a > m) m = a;
+    }
+    refLeft[x] = m;
+  }
 
-  const addSums = [0, 0, 0, 0, 0];
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
+  // Reconstructed stroke alpha maps. Junctions use the owner stroke's own
+  // clean profile; future strokes never contribute early. Verticals end flat
+  // above the bottom band; the bottom band arrives whole with S5.
+  const topR = new Uint8Array(width * height);
+  const cenR = new Uint8Array(width * height);
+  const midR = new Uint8Array(width * height);
+  const leftR = new Uint8Array(width * height);
+  for (let y = t0; y <= t1; y++) {
+    for (let x = x0; x <= x1; x++) {
       const i = y * width + x;
-      if (!Hcand[i] && !Vcand[i]) continue;
-      const isTop = Hcand[i] === 1 && inTop(y);
-      const isCentral = Vcand[i] === 1 && inCentral(x, y);
-      const isMid = Hcand[i] === 1 && inMid(y);
-      const isLeft = Vcand[i] === 1 && inLeft(x, y);
-      if (isTop) {
-        addSums[0] += alpha[i];
-        for (let k = 0; k < 4; k++) masks[k][i] = 1;
-      } else if (isCentral) {
-        addSums[1] += alpha[i];
-        for (let k = 1; k < 4; k++) masks[k][i] = 1;
-      } else if (isMid) {
-        addSums[2] += alpha[i];
-        for (let k = 2; k < 4; k++) masks[k][i] = 1;
-      } else if (isLeft) {
-        addSums[3] += alpha[i];
-        masks[3][i] = 1;
-      } else {
-        // Hcand/Vcand pixel outside every band (stray serif/noise):
-        // hidden until the full restore. Never leak early.
-        addSums[4] += alpha[i];
-      }
-      masks[4][i] = 1;
+      if (alpha[i] === 0) continue;
+      topR[i] = x >= cenX0 && x <= cenX1 ? refTop[y] || alpha[i] : alpha[i];
     }
   }
-  // State 5 always restores the complete original glyph pixel-for-pixel.
-  for (let i = 0; i < alpha.length; i++) {
-    if (alpha[i] > 0) masks[4][i] = 1;
-    else masks[4][i] = 0;
+  for (let y = t0; y < b0; y++) {
+    for (let x = cx0; x <= cx1; x++) {
+      const i = y * width + x;
+      if (alpha[i] === 0) continue;
+      const inBand = inBandTop(y) || inBandMid(y);
+      cenR[i] = inBand ? refCen[x] || alpha[i] : alpha[i];
+    }
+  }
+  for (let y = m0; y <= m1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const i = y * width + x;
+      if (alpha[i] === 0) continue;
+      const inCen = x >= cenX0 && x <= cenX1;
+      const inL = x >= glLeftX0 && x <= glLeftX1;
+      midR[i] = inCen || inL ? refMid[y] || alpha[i] : alpha[i];
+    }
+  }
+  for (let y = lMinY; y < b0; y++) {
+    for (let x = lx0; x <= lx1; x++) {
+      const i = y * width + x;
+      if (alpha[i] === 0) continue;
+      leftR[i] = inBandMid(y) ? refLeft[x] || alpha[i] : alpha[i];
+    }
   }
 
-  // Faint AA (<=10) outside true stroke runs stays hidden until state 5,
-  // where every original alpha value is restored verbatim.
+  // Progressive composition by alpha union (max). S5 restores full original.
+  const masks: Uint8Array[] = [];
+  const alphas: Uint8Array[] = [];
+  for (let k = 0; k < 5; k++) {
+    masks.push(new Uint8Array(width * height));
+    alphas.push(new Uint8Array(width * height));
+  }
+  const layers = [topR, cenR, midR, leftR];
+  const addSums = [0, 0, 0, 0, 0];
+  for (let k = 0; k < 4; k++) {
+    const prevA = alphas[k];
+    const prevM = masks[k];
+    if (k > 0) {
+      prevA.set(alphas[k - 1]);
+      prevM.set(masks[k - 1]);
+    }
+    const layer = layers[k];
+    for (let i = 0; i < alpha.length; i++) {
+      const v = layer[i];
+      if (v === 0) continue;
+      if (prevM[i] === 0) addSums[k] += v;
+      prevM[i] = 1;
+      if (v > prevA[i]) prevA[i] = v;
+    }
+  }
+  {
+    const fullM = masks[4];
+    const fullA = alphas[4];
+    const prevM = masks[3];
+    for (let i = 0; i < alpha.length; i++) {
+      if (alpha[i] > 0) {
+        if (prevM[i] === 0) addSums[4] += alpha[i];
+        fullM[i] = 1;
+        fullA[i] = alpha[i];
+      }
+    }
+  }
 
   const sums = masks.map((m) => {
     let s = 0;
@@ -422,6 +505,7 @@ export function analyzeZhengMasks(
   return {
     valid: true,
     masks,
+    alphas,
     meta: {
       top: [t0, t1],
       mid: [m0, m1],

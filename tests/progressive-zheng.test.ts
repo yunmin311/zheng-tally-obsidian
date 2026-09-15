@@ -97,6 +97,9 @@ describe('progressive-zheng: pure alpha/mask analysis (synthetic bitmap, no font
       expect(mask5[i]).toBe(hasInk);
     }
     expect(sumMaskedAlpha(alpha, mask5)).toBe(alpha.reduce((a, b) => a + b, 0));
+    for (let i = 0; i < alpha.length; i++) {
+      expect(res.alphas![4][i]).toBe(alpha[i]);
+    }
   });
 
   test('transparent background: zero-alpha source stays zero in every state', () => {
@@ -118,20 +121,26 @@ describe('progressive-zheng: pure alpha/mask analysis (synthetic bitmap, no font
     expect(partial.length).toBeGreaterThan(0);
     const res = analyzeZhengMasks(alpha, SW, SH);
     expect(res.valid).toBe(true);
+    expect(res.alphas).toHaveLength(5);
     const rgb: [number, number, number] = [10, 20, 30];
-    // In-band partial pixels keep exact alpha in their stroke state.
+    // Untouched clean pixel keeps its exact value.
     const topFringe = 6 * SW + 9; // (9,6) top edge, structural
     expect(alpha[topFringe]).toBe(128);
     expect(res.masks![0][topFringe]).toBe(1);
-    const rgba = recolorWithMask(alpha, res.masks![0], rgb, SW, SH);
+    expect(res.alphas![0][topFringe]).toBe(128);
+    const rgba = recolorWithMask(res.alphas![0], res.masks![0], rgb, SW, SH);
     expect(rgba[topFringe * 4 + 3]).toBe(128);
-    const midFringe = 18 * SW + 19; // (19,18) middle band
-    expect(res.masks![2][midFringe]).toBe(1);
-    for (const mask of res.masks!) {
-      const out = recolorWithMask(alpha, mask, rgb, SW, SH);
+    // Every emitted alpha value is copied from the source glyph (same row or
+    // column clean sample), never synthesized or binarized.
+    const sourceValues = new Set(Array.from(alpha));
+    for (let k = 0; k < 4; k++) {
+      const out = recolorWithMask(res.alphas![k], res.masks![k], rgb, SW, SH);
       for (let i = 0; i < alpha.length; i++) {
-        if (mask[i] && alpha[i] > 0 && alpha[i] < 255) {
-          expect(out[i * 4 + 3]).toBe(alpha[i]);
+        if (res.masks![k][i]) {
+          expect(out[i * 4 + 3]).toBe(res.alphas![k][i]);
+          expect(sourceValues.has(out[i * 4 + 3] as number)).toBe(true);
+        } else {
+          expect(out[i * 4 + 3]).toBe(0);
         }
       }
     }
@@ -141,6 +150,72 @@ describe('progressive-zheng: pure alpha/mask analysis (synthetic bitmap, no font
     expect(res.masks![0][noise]).toBe(0);
     expect(res.masks![3][noise]).toBe(0);
     expect(res.masks![4][noise]).toBe(1);
+    expect(res.alphas![4][noise]).toBe(77);
+  });
+
+  function countComponents(mask: Uint8Array, w: number, h: number): number {
+    const seen = new Uint8Array(w * h);
+    let components = 0;
+    const stack: number[] = [];
+    for (let i = 0; i < w * h; i++) {
+      if (!mask[i] || seen[i]) continue;
+      components++;
+      stack.push(i);
+      seen[i] = 1;
+      while (stack.length > 0) {
+        const cur = stack.pop() as number;
+        const cx = cur % w;
+        const cy = Math.floor(cur / w);
+        const neighbors = [
+          [cx - 1, cy],
+          [cx + 1, cy],
+          [cx, cy - 1],
+          [cx, cy + 1],
+        ];
+        for (const [nx, ny] of neighbors) {
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const ni = ny * w + nx;
+          if (mask[ni] && !seen[ni]) {
+            seen[ni] = 1;
+            stack.push(ni);
+          }
+        }
+      }
+    }
+    return components;
+  }
+
+  test('S1 top bar thickness is continuous across the center (no block/nub)', () => {
+    const alpha = buildSyntheticZhengAlpha();
+    const res = analyzeZhengMasks(alpha, SW, SH);
+    expect(res.valid).toBe(true);
+    const [t0, t1] = res.meta!.top;
+    const a1 = res.alphas![0];
+    // Every row of the reconstructed top bar carries ink across the central
+    // interval with the row's own clean level: no sudden thickening.
+    for (let y = t0; y <= t1; y++) {
+      let centerMin = 255;
+      let sideMax = 0;
+      for (let x = 8; x <= 31; x++) {
+        const v = a1[y * SW + x];
+        if (x >= 17 && x <= 21) {
+          if (v > 0 && v < centerMin) centerMin = v;
+        } else if (v > sideMax) {
+          sideMax = v;
+        }
+      }
+      expect(centerMin).toBeGreaterThan(0);
+      expect(Math.abs(centerMin - sideMax)).toBeLessThanOrEqual(40);
+    }
+  });
+
+  test('S1–S4 each form a single connected stroke (no isolated ghost blocks)', () => {
+    const alpha = buildSyntheticZhengAlpha();
+    const res = analyzeZhengMasks(alpha, SW, SH);
+    expect(res.valid).toBe(true);
+    for (let k = 0; k < 4; k++) {
+      expect(countComponents(res.masks![k], SW, SH)).toBe(1);
+    }
   });
 
   test('stroke ownership: state1 has no central nub (exact zero)', () => {
