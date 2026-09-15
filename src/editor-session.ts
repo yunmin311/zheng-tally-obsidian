@@ -1,17 +1,13 @@
 import type { Editor, MarkdownView, WorkspaceLeaf, Workspace, EditorPosition } from 'obsidian';
 import { Component } from 'obsidian';
 import { createTallyState, type TallyState } from './tally-state';
-import { createTallyRenderer, type TallyRenderer } from './renderer';
+import {
+  createFallbackOverlayRenderer,
+  createInlineTallyRenderer,
+  type InlineTallyRenderer,
+} from './renderer';
+import { resolveEditorHost, type ResolvedEditorHost } from './editor-host';
 import type { Settings } from './settings';
-
-interface CodeMirrorEditor {
-  coordsAtPos(pos: { line: number; ch: number }): { left: number; top: number; bottom: number };
-  wrapperElement: HTMLElement;
-}
-
-interface EditorWithCM extends Editor {
-  cm: CodeMirrorEditor;
-}
 
 export interface EditorSession {
   start(): boolean;
@@ -27,37 +23,51 @@ interface SessionDependencies {
   onSessionEnd: () => void;
 }
 
-function getCursorScreenPosition(editor: Editor): { left: number; top: number; bottom: number } {
-  const cm = (editor as EditorWithCM).cm;
-  const coords = cm.coordsAtPos(editor.getCursor());
-  return {
-    left: coords.left,
-    top: coords.top,
-    bottom: coords.bottom,
-  };
-}
-
 function isSystemKey(e: KeyboardEvent): boolean {
-  return e.ctrlKey || e.altKey || e.metaKey || e.shiftKey;
+  return e.ctrlKey || e.altKey || e.metaKey;
 }
 
 function isPrintableKey(e: KeyboardEvent): boolean {
   return e.key.length === 1 && !isSystemKey(e);
 }
 
+function isPlusKey(e: KeyboardEvent): boolean {
+  if (e.key === '+') return true;
+  if (e.code === 'NumpadAdd') return true;
+  if (e.code === 'Add') return true;
+  if (e.key === '=' && e.shiftKey) return true;
+  return false;
+}
+
+function isMinusKey(e: KeyboardEvent): boolean {
+  if (e.key === '-') return true;
+  if (e.key === '_') return true;
+  if (e.code === 'NumpadSubtract') return true;
+  if (e.code === 'Subtract') return true;
+  if (e.code === 'Minus') return true;
+  return false;
+}
+
 function isTallyControlKey(e: KeyboardEvent): boolean {
-  return e.key === ' ' || e.key === 'Spacebar' || e.key === 'Backspace' || e.key === 'Enter' || e.key === 'Escape';
+  if (e.key === ' ' || e.key === 'Spacebar') return true;
+  if (e.key === 'Backspace') return true;
+  if (e.key === 'Enter') return true;
+  if (e.key === 'Escape') return true;
+  if (isPlusKey(e)) return true;
+  if (isMinusKey(e)) return true;
+  if (e.code === 'NumpadAdd' || e.code === 'NumpadSubtract') return true;
+  return false;
 }
 
 export function createEditorSession(deps: SessionDependencies): EditorSession {
   const { editor, view, leaf, workspace, settings, onSessionEnd } = deps;
   let state: TallyState | null = null;
-  let renderer: TallyRenderer | null = null;
-  let overlayContainer: HTMLElement | null = null;
+  let renderer: InlineTallyRenderer | null = null;
+  let rendererHost: HTMLElement | null = null;
   let keydownHandler: ((e: KeyboardEvent) => void) | null = null;
   let isActive = false;
-  let cursorPos: { left: number; top: number; bottom: number } | null = null;
   let capturedCursor: EditorPosition | null = null;
+  let host: ResolvedEditorHost | null = null;
 
   const component = new (class extends Component {
     // Do not call cleanup() here to avoid circular dependency
@@ -78,16 +88,17 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
     component.unload();
 
     if (renderer) {
-      renderer.destroy();
+      try {
+        renderer.destroy();
+      } catch {
+        // Ignore teardown races.
+      }
       renderer = null;
     }
-    if (overlayContainer && overlayContainer.parentNode) {
-      overlayContainer.parentNode.removeChild(overlayContainer);
-      overlayContainer = null;
-    }
+    rendererHost = null;
     state = null;
-    cursorPos = null;
     capturedCursor = null;
+    host = null;
     onSessionEnd();
   }
 
@@ -98,7 +109,11 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
     }
     const text = settings.commitFormat === 'unicode' ? state.toUnicodeText() : state.toStableText();
     if (text) {
-      editor.replaceRange(text, capturedCursor);
+      try {
+        editor.replaceRange(text, capturedCursor);
+      } catch {
+        // Commit failure still tears down without leaking widget/listeners.
+      }
     }
     cleanup();
   }
@@ -114,25 +129,29 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
       e.preventDefault();
       e.stopPropagation();
 
-      switch (e.key) {
-        case ' ':
-        case 'Spacebar':
-          state.increment();
+      if (e.key === ' ' || e.key === 'Spacebar' || isPlusKey(e)) {
+        state.increment();
+        try {
           renderer?.update(state.count);
-          break;
-        case 'Backspace':
-          state.decrement();
+        } catch {
+          // Render failure never breaks counting session.
+        }
+      } else if (e.key === 'Backspace' || isMinusKey(e)) {
+        state.decrement();
+        try {
           renderer?.update(state.count);
-          break;
-        case 'Enter':
-          commitAndClose();
-          break;
-        case 'Escape':
-          cancelAndClose();
-          break;
+        } catch {
+          // Render failure never breaks counting session.
+        }
+      } else if (e.key === 'Enter') {
+        commitAndClose();
+      } else if (e.key === 'Escape') {
+        cancelAndClose();
       }
       return;
     }
+
+    if (isSystemKey(e)) return;
 
     if (isPrintableKey(e)) {
       e.preventDefault();
@@ -156,45 +175,89 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
       const activeLeaf = workspace.activeLeaf;
       if (activeLeaf !== leaf) return false;
 
-      state = createTallyState(0);
-      renderer = createTallyRenderer(editor);
+      const resolved = resolveEditorHost(editor);
+      if (!resolved) return false;
+      host = resolved;
 
-      overlayContainer = document.createElement('div');
-      document.body.appendChild(overlayContainer);
+      state = createTallyState(0);
+
+      let inline: InlineTallyRenderer | null = null;
       try {
-        renderer.mount(overlayContainer);
-      } catch (e) {
+        inline = createInlineTallyRenderer(host);
+      } catch {
+        inline = null;
+      }
+      if (!inline) {
+        state = null;
+        host = null;
+        return false;
+      }
+
+      try {
+        host.dom.appendChild(inline.element);
+      } catch {
+        try {
+          inline.destroy();
+        } catch {
+          // Ignore teardown races.
+        }
+        let fallback: InlineTallyRenderer | null = null;
+        try {
+          fallback = createFallbackOverlayRenderer(host.typography);
+          document.body.appendChild(fallback.element);
+        } catch {
+          fallback = null;
+        }
+        if (!fallback) {
+          state = null;
+          host = null;
+          return false;
+        }
+        inline = fallback;
+        rendererHost = document.body;
+      }
+      if (!rendererHost) rendererHost = host.dom;
+      renderer = inline;
+
+      try {
+        renderer.update(0);
+      } catch {
         cleanup();
         return false;
       }
 
-      cursorPos = getCursorScreenPosition(editor);
-      capturedCursor = editor.getCursor();
-
-      const overlay = overlayContainer.querySelector('.zheng-tally-overlay') as HTMLElement;
-      if (overlay) {
-        const rect = overlay.getBoundingClientRect();
-        const viewportHeight = window.innerHeight;
-        let top = cursorPos.bottom + 4;
-        if (top + rect.height > viewportHeight - 8) {
-          top = cursorPos.top - rect.height - 4;
-        }
-        overlay.style.left = `${cursorPos.left}px`;
-        overlay.style.top = `${top}px`;
+      try {
+        capturedCursor = editor.getCursor();
+      } catch {
+        cleanup();
+        return false;
+      }
+      if (!capturedCursor) {
+        cleanup();
+        return false;
       }
 
       renderer.onClick(() => {
         if (state) {
           state.increment();
-          renderer?.update(state.count);
+          try {
+            renderer?.update(state.count);
+          } catch {
+            // Ignore render failures on click.
+          }
         }
       });
 
-      keydownHandler = handleKeydown;
-      component.registerDomEvent(window, 'keydown', keydownHandler, true);
+      try {
+        keydownHandler = handleKeydown;
+        component.registerDomEvent(window, 'keydown', keydownHandler, true);
 
-      const leafChangeEventRef = workspace.on('active-leaf-change', handleLeafChange);
-      component.registerEvent(leafChangeEventRef);
+        const leafChangeEventRef = workspace.on('active-leaf-change', handleLeafChange);
+        component.registerEvent(leafChangeEventRef);
+      } catch {
+        cleanup();
+        return false;
+      }
 
       isActive = true;
       return true;
@@ -204,3 +267,5 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
     },
   };
 }
+
+export { isTallyControlKey, isPlusKey, isMinusKey };

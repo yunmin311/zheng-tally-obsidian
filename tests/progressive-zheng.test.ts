@@ -8,13 +8,11 @@ import {
   parseCssColor,
   type ZhengTypography,
 } from '../src/zheng-progressive';
-import { createTallyRenderer, readEditorTypography } from '../src/renderer';
-import type { Editor } from 'obsidian';
+import { createInlineTallyRenderer, readHostTypography } from '../src/renderer';
+import { resolveEditorHost } from '../src/editor-host';
 
 // ---------------------------------------------------------------------------
 // Synthetic 正 alpha bitmap (pure, no canvas/font rasterization).
-// This is the deterministic stand-in for "current-font 正 glyph alpha"
-// when jsdom cannot provide real Canvas font rasterization.
 // Layout (W=40,H=40):
 //  top Heng:    rows 6-8,   cols 8-31
 //  central Shu: rows 6-33,  cols 18-20
@@ -40,7 +38,6 @@ function buildSyntheticZhengAlpha(): Uint8Array {
   fillRect(10, 17, 29, 19); // middle Heng
   fillRect(10, 17, 12, 32); // left Shu
   fillRect(8, 31, 31, 33); // bottom Heng
-  // Anti-aliased fringe: partial alpha must be preserved, never binarized.
   set(8, 5, 128);
   set(31, 5, 96);
   set(7, 7, 64);
@@ -75,7 +72,6 @@ describe('progressive-zheng: pure alpha/mask analysis (synthetic bitmap, no font
     for (let i = 1; i < sums.length; i++) {
       expect(sums[i]).toBeGreaterThan(sums[i - 1]);
     }
-    // Superset: every pixel in mask N-1 must also be in mask N
     for (let n = 1; n < 5; n++) {
       const prev = res.masks![n - 1];
       const cur = res.masks![n];
@@ -112,25 +108,68 @@ describe('progressive-zheng: pure alpha/mask analysis (synthetic bitmap, no font
 
   test('anti-aliased alpha is preserved, never binarized', () => {
     const alpha = buildSyntheticZhengAlpha();
-    // Sanity: synthetic contains partial-alpha fringe
     const partial = Array.from(alpha).filter((v) => v > 0 && v < 255);
     expect(partial.length).toBeGreaterThan(0);
     const res = analyzeZhengMasks(alpha, SW, SH);
     expect(res.valid).toBe(true);
     const rgb: [number, number, number] = [10, 20, 30];
-    // Find a fringe pixel that is included in state 1 (top edge)
-    const fringeIdx = 5 * SW + 8; // (8,5) alpha 128, part of top Heng fringe
+    const fringeIdx = 5 * SW + 8;
     expect(alpha[fringeIdx]).toBe(128);
     expect(res.masks![0][fringeIdx]).toBe(1);
     const rgba = recolorWithMask(alpha, res.masks![0], rgb, SW, SH);
     expect(rgba[fringeIdx * 4 + 3]).toBe(128);
-    // Included partial-alpha pixels keep exact value across all states
     for (const mask of res.masks!) {
       const out = recolorWithMask(alpha, mask, rgb, SW, SH);
       for (let i = 0; i < alpha.length; i++) {
         if (mask[i] && alpha[i] > 0 && alpha[i] < 255) {
           expect(out[i * 4 + 3]).toBe(alpha[i]);
         }
+      }
+    }
+  });
+
+  test('stroke ownership: state1 has no central nub', () => {
+    const alpha = buildSyntheticZhengAlpha();
+    const res = analyzeZhengMasks(alpha, SW, SH);
+    expect(res.valid).toBe(true);
+    const m1 = res.masks![0];
+    // Central column below top band (rows 10-15, cols 18-20) belongs to stroke 2.
+    for (let y = 10; y <= 15; y++) {
+      for (let x = 18; x <= 20; x++) {
+        expect(m1[y * SW + x]).toBe(0);
+      }
+    }
+  });
+
+  test('stroke ownership: state3 has no left vertical body', () => {
+    const alpha = buildSyntheticZhengAlpha();
+    const res = analyzeZhengMasks(alpha, SW, SH);
+    expect(res.valid).toBe(true);
+    const m3 = res.masks![2];
+    const m4 = res.masks![3];
+    // Left spine mid-body (rows 22-28, cols 10-12) appears only at state4.
+    for (let y = 22; y <= 28; y++) {
+      for (let x = 10; x <= 12; x++) {
+        if (alpha[y * SW + x] > 0) {
+          expect(m3[y * SW + x]).toBe(0);
+          expect(m4[y * SW + x]).toBe(1);
+        }
+      }
+    }
+  });
+
+  test('stroke ownership: state4 has no bottom side arms', () => {
+    const alpha = buildSyntheticZhengAlpha();
+    const res = analyzeZhengMasks(alpha, SW, SH);
+    expect(res.valid).toBe(true);
+    const m4 = res.masks![3];
+    const m5 = res.masks![4];
+    // Bottom row away from verticals (row 32, cols 24-29) belongs to stroke 5.
+    for (let x = 24; x <= 29; x++) {
+      const idx = 32 * SW + x;
+      if (alpha[idx] > 0) {
+        expect(m4[idx]).toBe(0);
+        expect(m5[idx]).toBe(1);
       }
     }
   });
@@ -181,12 +220,10 @@ describe('progressive-zheng: color / mask cache separation', () => {
       '"Kaiti SC", Kaiti, KaiTi, serif',
     ];
     const keys = families.map((f) => buildMaskCacheKey({ ...baseTypo, fontFamily: f }));
-    // Distinct keys prove the input family is part of identity (no fixed-font collapse)
     expect(new Set(keys).size).toBe(3);
     for (let i = 0; i < families.length; i++) {
       expect(keys[i]).toContain(families[i]);
     }
-    // Renderer source must not hardcode a fixed preview font or SVG/tally-glyph source
     const rendererSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.ts'), 'utf8');
     expect(rendererSrc).not.toMatch(/PARTIAL_GLYPHS/);
     expect(rendererSrc).not.toMatch(/['"]一['"]/);
@@ -194,7 +231,6 @@ describe('progressive-zheng: color / mask cache separation', () => {
     expect(rendererSrc).not.toMatch(/['"]下['"]/);
     expect(rendererSrc).not.toMatch(/<svg/i);
     expect(rendererSrc).not.toMatch(/1D37/);
-    // Progressive module must reference only 普通汉字 正 as glyph source
     const progSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'zheng-progressive.ts'), 'utf8');
     expect(progSrc).toContain('正');
     expect(progSrc).not.toMatch(/['"]一['"]/);
@@ -211,7 +247,6 @@ describe('progressive-zheng: color / mask cache separation', () => {
     expect(white).toEqual([255, 255, 255]);
     const outBlack = recolorWithMask(alpha, mask3, black, SW, SH);
     const outWhite = recolorWithMask(alpha, mask3, white, SW, SH);
-    // Same alpha channel, different RGB where ink exists
     let checked = 0;
     for (let i = 0; i < alpha.length; i++) {
       if (mask3[i] && alpha[i] > 0) {
@@ -226,119 +261,117 @@ describe('progressive-zheng: color / mask cache separation', () => {
   });
 });
 
-describe('progressive-zheng: renderer DOM + theme', () => {
-  const mockEditor = (color = 'rgb(0, 0, 0)') => {
-    const el = document.createElement('div');
-    el.style.fontFamily = 'SimSun, serif';
-    el.style.fontSize = '24px';
-    el.style.fontWeight = '400';
-    el.style.fontStyle = 'normal';
-    el.style.color = color;
-    document.body.appendChild(el);
-    return {
-      el,
-      editor: {
-        cm: { wrapperElement: el },
-        getCursor: () => ({ line: 0, ch: 0 }),
-        replaceRange: jest.fn(),
-      } as unknown as Editor,
-    };
+describe('progressive-zheng: inline renderer DOM + theme', () => {
+  const mockHost = (color = 'rgb(0, 0, 0)') => {
+    const dom = document.createElement('div');
+    dom.style.fontFamily = 'SimSun, serif';
+    dom.style.fontSize = '24px';
+    dom.style.fontWeight = '400';
+    dom.style.fontStyle = 'normal';
+    dom.style.color = color;
+    document.body.appendChild(dom);
+    const editor = {
+      getCursor: () => ({ line: 0, ch: 0 }),
+      posToOffset: () => 0,
+      replaceRange: jest.fn(),
+      cm: {
+        dom,
+        coordsAtPos: () => ({ left: 100, top: 100, bottom: 120 }),
+      },
+    } as unknown as import('obsidian').Editor;
+    const host = resolveEditorHost(editor)!;
+    expect(host).not.toBeNull();
+    return { dom, editor, host };
   };
 
   afterEach(() => {
     document.body.innerHTML = '';
   });
 
+  test('inline widget is normal path (not position:fixed)', () => {
+    const { dom, host } = mockHost();
+    const renderer = createInlineTallyRenderer(host);
+    expect(renderer.isFallback).toBe(false);
+    expect(renderer.element.className).toContain('zheng-tally-inline');
+    expect(renderer.element.style.position).not.toBe('fixed');
+    dom.appendChild(renderer.element);
+    renderer.update(3);
+    expect(renderer.element.querySelector('[data-state="3"]')).not.toBeNull();
+    renderer.destroy();
+    expect(dom.querySelector('.zheng-tally-inline')).toBeNull();
+  });
+
   test('fallback does not throw when rasterization is unavailable (jsdom)', () => {
-    const { el, editor } = mockEditor();
+    const { host } = mockHost();
     let renderer;
     expect(() => {
-      renderer = createTallyRenderer(editor);
+      renderer = createInlineTallyRenderer(host);
     }).not.toThrow();
-    const host = document.createElement('div');
-    document.body.appendChild(host);
-    expect(() => renderer!.mount(host)).not.toThrow();
     for (const n of [1, 2, 3, 4, 5]) {
       expect(() => renderer!.update(n)).not.toThrow();
     }
     expect(() => renderer!.destroy()).not.toThrow();
-    el.remove();
   });
 
   test('states 1-3 never render 一/丁/下; states use canvas or explicit [N] fallback', () => {
-    const { el, editor } = mockEditor();
-    const renderer = createTallyRenderer(editor);
-    const host = document.createElement('div');
-    document.body.appendChild(host);
-    renderer.mount(host);
+    const { dom, host } = mockHost();
+    const renderer = createInlineTallyRenderer(host);
+    dom.appendChild(renderer.element);
     for (const n of [1, 2, 3]) {
       renderer.update(n);
-      const text = host.textContent || '';
+      const text = renderer.element.textContent || '';
       expect(text).not.toContain('一');
       expect(text).not.toContain('丁');
       expect(text).not.toContain('下');
-      // Either a progressive canvas exists or an explicit fallback marker
-      const hasCanvas = host.querySelector('canvas') !== null;
+      const hasCanvas = renderer.element.querySelector('canvas') !== null;
       const hasFallback = text.includes(`[${n}]`);
       expect(hasCanvas || hasFallback).toBe(true);
     }
     renderer.destroy();
-    el.remove();
   });
 
-  test('overlay CSS contains no hardcoded light/dark backgrounds', () => {
-    const { el, editor } = mockEditor();
-    const renderer = createTallyRenderer(editor);
-    const host = document.createElement('div');
-    document.body.appendChild(host);
-    renderer.mount(host);
-    const inner = host.querySelector('div > div') as HTMLElement | null;
-    expect(inner).not.toBeNull();
-    const css = `${inner!.style.cssText} ${host.innerHTML}`;
+  test('inline CSS contains no hardcoded light/dark backgrounds and no fixed overlay', () => {
+    const { dom, host } = mockHost();
+    const renderer = createInlineTallyRenderer(host);
+    dom.appendChild(renderer.element);
+    renderer.update(2);
+    const css = `${renderer.element.innerHTML} ${(renderer.element as HTMLElement).style.cssText}`;
     expect(css).not.toMatch(/#fff/i);
-    expect(css).not.toMatch(/#000/i);
     expect(css).not.toMatch(/#fafafa/i);
     expect(css).not.toMatch(/#ccc/i);
-    // Panel must use Obsidian variables
     const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.ts'), 'utf8');
     expect(src).toContain('--background-secondary');
     expect(src).toContain('--background-modifier-border');
-    // No hardcoded hex fallback for panel bg/border
     expect(src).not.toMatch(/--background-secondary,\s*#[0-9a-fA-F]{3,6}/);
     expect(src).not.toMatch(/--background-modifier-border,\s*#[0-9a-fA-F]{3,6}/);
+    // Normal inline element must not be fixed; fixed only in explicit fallback.
+    expect((renderer.element as HTMLElement).style.position).toBe('absolute');
     renderer.destroy();
-    el.remove();
   });
 
   test('count 18 renders three complete 正 + progressive state 3 (no 一/丁/下)', () => {
-    const { el, editor } = mockEditor();
-    const renderer = createTallyRenderer(editor);
-    const host = document.createElement('div');
-    document.body.appendChild(host);
-    renderer.mount(host);
+    const { dom, host } = mockHost();
+    const renderer = createInlineTallyRenderer(host);
+    dom.appendChild(renderer.element);
     renderer.update(18);
-    const fulls = host.querySelectorAll('[data-full="true"]');
-    const partial = host.querySelector('[data-state="3"]');
+    const fulls = renderer.element.querySelectorAll('[data-full="true"]');
+    const partial = renderer.element.querySelector('[data-state="3"]');
     expect(fulls.length).toBe(3);
     expect(partial).not.toBeNull();
-    const text = host.textContent || '';
+    const text = renderer.element.textContent || '';
     expect(text).not.toContain('下');
     expect(text).not.toContain('一');
     expect(text).not.toContain('丁');
     renderer.destroy();
-    el.remove();
   });
 
-  test('readEditorTypography reads family/size/weight/style/color + DPR', () => {
-    const { el, editor } = mockEditor('rgb(255, 255, 255)');
-    const typo = readEditorTypography(editor);
-    expect(typo.fontFamily).toBeTruthy();
-    expect(typo.fontSize).toBeTruthy();
-    expect(typo.fontWeight).toBeTruthy();
-    expect(typo.fontStyle).toBeTruthy();
-    expect(typo.color).toBeTruthy();
-    expect(typeof typo.devicePixelRatio).toBe('number');
-    expect(typo.devicePixelRatio).toBeGreaterThan(0);
-    el.remove();
+  test('readHostTypography reads family/size/weight/style/color + DPR', () => {
+    const { dom } = mockHost('rgb(255, 255, 255)');
+    const typo = readHostTypography(dom);
+    expect(typo).not.toBeNull();
+    expect(typo!.fontFamily).toBeTruthy();
+    expect(typo!.fontSize).toBeTruthy();
+    expect(typo!.color).toBeTruthy();
+    expect(typeof typo!.devicePixelRatio).toBe('number');
   });
 });

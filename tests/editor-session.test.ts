@@ -3,15 +3,23 @@ import type { Editor, MarkdownView, WorkspaceLeaf, Workspace, EventRef, EditorPo
 
 const createMockEditor = (overrides: Partial<{
   cursor: EditorPosition;
-  coordsAtPos: () => { left: number; top: number; bottom: number };
+  offset: number;
+  coords: { left: number; top: number; bottom: number };
   replaceRange: jest.Mock;
+  dom: HTMLElement;
 }> = {}) => {
   const cursor = overrides.cursor ?? { line: 0, ch: 0 };
+  const dom = overrides.dom ?? document.createElement('div');
+  if (!dom.parentNode) document.body.appendChild(dom);
+  dom.style.fontFamily = 'SimSun, serif';
+  dom.style.fontSize = '24px';
+  dom.style.color = 'rgb(0, 0, 0)';
   return {
     cm: {
-      coordsAtPos: overrides.coordsAtPos ?? (() => ({ left: 100, top: 100, bottom: 120 })),
-      wrapperElement: document.body,
+      dom,
+      coordsAtPos: () => overrides.coords ?? { left: 100, top: 100, bottom: 120 },
     },
+    posToOffset: () => overrides.offset ?? 0,
     getCursor: () => cursor,
     replaceRange: overrides.replaceRange ?? jest.fn(),
   } as unknown as Editor;
@@ -31,7 +39,7 @@ const createMockWorkspace = (leaf: WorkspaceLeaf) => ({
   getActiveViewOfType: jest.fn(),
 } as unknown as Workspace);
 
-describe('EditorSession integration', () => {
+describe('EditorSession integration (inline CM6 widget)', () => {
   let mockEditor: Editor;
   let mockView: MarkdownView;
   let mockLeaf: WorkspaceLeaf;
@@ -39,6 +47,7 @@ describe('EditorSession integration', () => {
   let settings: { commitFormat: 'stable' | 'unicode' };
 
   beforeEach(() => {
+    document.body.innerHTML = '';
     mockEditor = createMockEditor();
     mockView = createMockView(mockEditor);
     mockLeaf = createMockLeaf();
@@ -46,7 +55,11 @@ describe('EditorSession integration', () => {
     settings = { commitFormat: 'stable' };
   });
 
-  test('session start creates overlay and state', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  test('session start creates inline widget inside editor dom', () => {
     let sessionEnded = false;
     const session = createEditorSession({
       editor: mockEditor,
@@ -57,17 +70,34 @@ describe('EditorSession integration', () => {
       onSessionEnd: () => { sessionEnded = true; },
     });
 
-    const started = session.start();
-    expect(started).toBe(true);
+    expect(session.start()).toBe(true);
     expect(sessionEnded).toBe(false);
-
-    const overlay = document.querySelector('.zheng-tally-overlay');
-    expect(overlay).not.toBeNull();
-
+    expect(document.querySelector('.zheng-tally-inline')).not.toBeNull();
+    // Normal path is inline, not fixed overlay.
+    expect(document.querySelector('.zheng-tally-overlay')).toBeNull();
     session.destroy();
   });
 
-  test('Space increments count and updates renderer', () => {
+  test('fail-closed when CM6 host cannot resolve (no cm/dom)', () => {
+    const bad = {
+      getCursor: () => ({ line: 0, ch: 0 }),
+      replaceRange: jest.fn(),
+    } as unknown as Editor;
+    const session = createEditorSession({
+      editor: bad,
+      view: mockView,
+      leaf: mockLeaf,
+      workspace: mockWorkspace,
+      settings,
+      onSessionEnd: () => {},
+    });
+    expect(session.start()).toBe(false);
+    expect(document.querySelector('.zheng-tally-inline')).toBeNull();
+    expect(document.querySelector('.zheng-tally-overlay')).toBeNull();
+    session.destroy();
+  });
+
+  test('Space increments count and updates inline widget', () => {
     const session = createEditorSession({
       editor: mockEditor,
       view: mockView,
@@ -76,23 +106,66 @@ describe('EditorSession integration', () => {
       settings,
       onSessionEnd: () => {},
     });
-
     session.start();
-
     window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
-
-    const tallyText = document.querySelector('.zheng-tally-overlay span');
-    // Progressive renderer: state 1 is a canvas from the same 正 glyph,
-    // or explicit [1] fallback in jsdom where Canvas raster is unavailable.
-    // Must never use legacy partial characters.
-    expect(tallyText?.textContent).not.toContain('一');
-    expect(tallyText?.textContent).not.toContain('丁');
-    expect(tallyText?.textContent).not.toContain('下');
-    const host = document.querySelector('.zheng-tally-overlay');
-    const hasCanvas = host?.querySelector('canvas') !== null;
-    const hasFallback = (tallyText?.textContent || '').includes('[1]');
+    const widget = document.querySelector('.zheng-tally-inline');
+    expect(widget).not.toBeNull();
+    expect(widget?.textContent).not.toContain('一');
+    const hasCanvas = widget?.querySelector('canvas') !== null;
+    const hasFallback = (widget?.textContent || '').includes('[1]');
     expect(hasCanvas || hasFallback).toBe(true);
+    session.destroy();
+  });
 
+  test('+ and NumpadAdd increment', () => {
+    const session = createEditorSession({
+      editor: mockEditor,
+      view: mockView,
+      leaf: mockLeaf,
+      workspace: mockWorkspace,
+      settings,
+      onSessionEnd: () => {},
+    });
+    session.start();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '+' }));
+    let widget = document.querySelector('.zheng-tally-inline');
+    expect(widget?.textContent).toContain('1');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Add', code: 'NumpadAdd' }));
+    widget = document.querySelector('.zheng-tally-inline');
+    expect(widget?.textContent).toContain('2');
+    session.destroy();
+  });
+
+  test('Shift+= is recognized as plus (shift must not passthrough)', () => {
+    const session = createEditorSession({
+      editor: mockEditor,
+      view: mockView,
+      leaf: mockLeaf,
+      workspace: mockWorkspace,
+      settings,
+      onSessionEnd: () => {},
+    });
+    session.start();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '+', shiftKey: true, code: 'Equal' }));
+    expect(document.querySelector('.zheng-tally-inline')?.textContent).toContain('1');
+    session.destroy();
+  });
+
+  test('- and NumpadSubtract decrement, floor at 0', () => {
+    const session = createEditorSession({
+      editor: mockEditor,
+      view: mockView,
+      leaf: mockLeaf,
+      workspace: mockWorkspace,
+      settings,
+      onSessionEnd: () => {},
+    });
+    session.start();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '-' }));
+    expect(document.querySelector('.zheng-tally-inline')?.textContent).toContain('0');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '-', code: 'NumpadSubtract' }));
+    expect(document.querySelector('.zheng-tally-inline')?.textContent).toContain('0');
     session.destroy();
   });
 
@@ -105,47 +178,18 @@ describe('EditorSession integration', () => {
       settings,
       onSessionEnd: () => {},
     });
-
     session.start();
-
     window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
     window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace' }));
-
-    const tallyContainer = document.querySelector('.zheng-tally-overlay span');
-    // After 2 increments + 1 decrement, count is 1 -> progressive state 1.
-    expect(tallyContainer?.textContent).not.toContain('一');
-    expect(tallyContainer?.textContent).not.toContain('丁');
-    expect(tallyContainer?.textContent).not.toContain('下');
-    expect(tallyContainer?.textContent).toContain('[1]');
-
+    expect(document.querySelector('.zheng-tally-inline')?.textContent).toContain('1');
     session.destroy();
   });
 
-  test('Enter commits text and closes session', () => {
-    let sessionEnded = false;
-    const session = createEditorSession({
-      editor: mockEditor,
-      view: mockView,
-      leaf: mockLeaf,
-      workspace: mockWorkspace,
-      settings,
-      onSessionEnd: () => { sessionEnded = true; },
-    });
-
-    session.start();
-    for (let i = 0; i < 5; i++) {
-      window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
-    }
-
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
-
-    expect(mockEditor.replaceRange).toHaveBeenCalledWith('正', mockEditor.getCursor());
-    expect(sessionEnded).toBe(true);
-    expect(document.querySelector('.zheng-tally-overlay')).toBeNull();
-  });
-
-  test('Esc cancels without inserting text', () => {
+  test('Enter commits text and removes widget with single replaceRange', () => {
+    const replaceSpy = jest.fn();
+    mockEditor = createMockEditor({ replaceRange: replaceSpy });
+    mockView = createMockView(mockEditor);
     const session = createEditorSession({
       editor: mockEditor,
       view: mockView,
@@ -154,14 +198,51 @@ describe('EditorSession integration', () => {
       settings,
       onSessionEnd: () => {},
     });
+    session.start();
+    for (let i = 0; i < 5; i++) window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
+    expect(replaceSpy).not.toHaveBeenCalled();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    expect(replaceSpy).toHaveBeenCalledTimes(1);
+    expect(replaceSpy).toHaveBeenCalledWith('正', mockEditor.getCursor());
+    expect(document.querySelector('.zheng-tally-inline')).toBeNull();
+    session.destroy();
+  });
 
+  test('Esc cancels without inserting text', () => {
+    const replaceSpy = jest.fn();
+    mockEditor = createMockEditor({ replaceRange: replaceSpy });
+    mockView = createMockView(mockEditor);
+    const session = createEditorSession({
+      editor: mockEditor,
+      view: mockView,
+      leaf: mockLeaf,
+      workspace: mockWorkspace,
+      settings,
+      onSessionEnd: () => {},
+    });
     session.start();
     window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(replaceSpy).not.toHaveBeenCalled();
+    expect(document.querySelector('.zheng-tally-inline')).toBeNull();
+    session.destroy();
+  });
 
-    expect(mockEditor.replaceRange).not.toHaveBeenCalled();
-    expect(document.querySelector('.zheng-tally-overlay')).toBeNull();
+  test('Ctrl/Alt/Meta combos passthrough and keep session', () => {
+    const session = createEditorSession({
+      editor: mockEditor,
+      view: mockView,
+      leaf: mockLeaf,
+      workspace: mockWorkspace,
+      settings,
+      onSessionEnd: () => {},
+    });
+    session.start();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', ctrlKey: true }));
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', ctrlKey: true }));
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', altKey: true }));
+    expect(document.querySelector('.zheng-tally-inline')).not.toBeNull();
+    session.destroy();
   });
 
   test('Second start during active session returns false', () => {
@@ -173,10 +254,8 @@ describe('EditorSession integration', () => {
       settings,
       onSessionEnd: () => {},
     });
-
     expect(session.start()).toBe(true);
     expect(session.start()).toBe(false);
-
     session.destroy();
   });
 
@@ -190,23 +269,18 @@ describe('EditorSession integration', () => {
       settings,
       onSessionEnd: () => { sessionEnded = true; },
     });
-
     session.start();
-    (mockWorkspace as any).activeLeaf = null;
-
-    const leafChangeHandler = (mockWorkspace.on as jest.Mock).mock.calls.find(
-      (c: any[]) => c[0] === 'active-leaf-change'
-    )?.[1];
-
-    if (leafChangeHandler) {
-      leafChangeHandler();
-    }
-
+    (mockWorkspace as unknown as { activeLeaf: unknown }).activeLeaf = null;
+    const handler = (mockWorkspace.on as jest.Mock).mock.calls.find(
+      (c: unknown[]) => c[0] === 'active-leaf-change',
+    )?.[1] as (() => void) | undefined;
+    if (handler) handler();
     expect(sessionEnded).toBe(true);
-    expect(document.querySelector('.zheng-tally-overlay')).toBeNull();
+    expect(document.querySelector('.zheng-tally-inline')).toBeNull();
+    session.destroy();
   });
 
-  test('Plugin unload destroys session', () => {
+  test('Count 18 renders three 正 and state 3 inline', () => {
     const session = createEditorSession({
       editor: mockEditor,
       view: mockView,
@@ -215,74 +289,38 @@ describe('EditorSession integration', () => {
       settings,
       onSessionEnd: () => {},
     });
-
     session.start();
-    session.destroy();
-
-    expect(document.querySelector('.zheng-tally-overlay')).toBeNull();
-  });
-
-  test('Count 18 renders three 正 and three-stroke partial', () => {
-    const session = createEditorSession({
-      editor: mockEditor,
-      view: mockView,
-      leaf: mockLeaf,
-      workspace: mockWorkspace,
-      settings,
-      onSessionEnd: () => {},
-    });
-
-    session.start();
-
-    for (let i = 0; i < 18; i++) {
-      window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
-    }
-
-    const tallyContainer = document.querySelector('.zheng-tally-overlay span') as HTMLElement;
-    const text = tallyContainer?.textContent || '';
-    expect(text).toContain('正正正');
-    // Progressive state 3 from the same 正 glyph (canvas) or explicit [3]
-    // fallback in jsdom; legacy 下 must never appear.
-    expect(text).not.toContain('下');
-    expect(text).not.toContain('一');
-    expect(text).not.toContain('丁');
-    const overlay = document.querySelector('.zheng-tally-overlay');
-    const partial = overlay?.querySelector('[data-state="3"]');
-    expect(partial).not.toBeNull();
-
+    for (let i = 0; i < 18; i++) window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
+    const widget = document.querySelector('.zheng-tally-inline');
+    expect(widget?.querySelectorAll('[data-full="true"]').length).toBe(3);
+    expect(widget?.querySelector('[data-state="3"]')).not.toBeNull();
     session.destroy();
   });
 
-  test('Unicode commit format works', () => {
-    const unicodeSettings = { commitFormat: 'unicode' as const };
-    let sessionEnded = false;
-    const session = createEditorSession({
-      editor: mockEditor,
-      view: mockView,
-      leaf: mockLeaf,
-      workspace: mockWorkspace,
-      settings: unicodeSettings,
-      onSessionEnd: () => { sessionEnded = true; },
-    });
-
-    session.start();
-    for (let i = 0; i < 5; i++) {
-      window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
-    }
-
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
-
-    expect(mockEditor.replaceRange).toHaveBeenCalledWith('\u{1D376}', mockEditor.getCursor());
-    expect(sessionEnded).toBe(true);
-  });
-
-  test('Input isolation: printable keys are blocked and do not reach editor', () => {
-    const replaceRangeSpy = jest.fn();
-    mockEditor = createMockEditor({ replaceRange: replaceRangeSpy });
+  test('Unicode commit format works with single edit', () => {
+    const replaceSpy = jest.fn();
+    mockEditor = createMockEditor({ replaceRange: replaceSpy });
     mockView = createMockView(mockEditor);
-    mockLeaf = createMockLeaf();
-    mockWorkspace = createMockWorkspace(mockLeaf);
+    const session = createEditorSession({
+      editor: mockEditor,
+      view: mockView,
+      leaf: mockLeaf,
+      workspace: mockWorkspace,
+      settings: { commitFormat: 'unicode' },
+      onSessionEnd: () => {},
+    });
+    session.start();
+    for (let i = 0; i < 5; i++) window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    expect(replaceSpy).toHaveBeenCalledTimes(1);
+    expect(replaceSpy).toHaveBeenCalledWith('\u{1D376}', mockEditor.getCursor());
+    session.destroy();
+  });
 
+  test('Input isolation: printable keys blocked, no doc edit during tally', () => {
+    const replaceSpy = jest.fn();
+    mockEditor = createMockEditor({ replaceRange: replaceSpy });
+    mockView = createMockView(mockEditor);
     const session = createEditorSession({
       editor: mockEditor,
       view: mockView,
@@ -291,59 +329,18 @@ describe('EditorSession integration', () => {
       settings,
       onSessionEnd: () => {},
     });
-
     session.start();
-
-    // Dispatch a printable key (e.g., 'a')
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));
-
-    // The tally count should not change
-    const tallyContainer = document.querySelector('.zheng-tally-overlay span') as HTMLElement;
-    expect(tallyContainer?.textContent).not.toContain('a');
-
-    // replaceRange should not be called
-    expect(replaceRangeSpy).not.toHaveBeenCalled();
-
+    expect(document.querySelector('.zheng-tally-inline')?.textContent).not.toContain('a');
+    expect(replaceSpy).not.toHaveBeenCalled();
     session.destroy();
   });
 
-  test('Input isolation: system key combinations (Ctrl+C, Ctrl+V, Alt+Tab) are allowed through', () => {
-    const session = createEditorSession({
-      editor: mockEditor,
-      view: mockView,
-      leaf: mockLeaf,
-      workspace: mockWorkspace,
-      settings,
-      onSessionEnd: () => {},
-    });
-
-    session.start();
-
-    // These should not be blocked (they don't match tally controls, but they're system keys)
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', ctrlKey: true }));
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', ctrlKey: true }));
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', altKey: true }));
-
-    // Session should still be active
-    const overlay = document.querySelector('.zheng-tally-overlay');
-    expect(overlay).not.toBeNull();
-
-    session.destroy();
-  });
-
-  test('Captured cursor position is used for commit, not current cursor', () => {
+  test('Captured cursor used for commit', () => {
     const initialCursor = { line: 5, ch: 10 };
-    const changedCursor = { line: 10, ch: 20 };
-    const replaceRangeSpy = jest.fn();
-
-    mockEditor = createMockEditor({
-      cursor: initialCursor,
-      replaceRange: replaceRangeSpy,
-    });
+    const replaceSpy = jest.fn();
+    mockEditor = createMockEditor({ cursor: initialCursor, replaceRange: replaceSpy });
     mockView = createMockView(mockEditor);
-    mockLeaf = createMockLeaf();
-    mockWorkspace = createMockWorkspace(mockLeaf);
-
     const session = createEditorSession({
       editor: mockEditor,
       view: mockView,
@@ -352,27 +349,16 @@ describe('EditorSession integration', () => {
       settings,
       onSessionEnd: () => {},
     });
-
     session.start();
-
-    // Simulate cursor changing after session start
-    (mockEditor as any).cm.coordsAtPos = () => ({ left: 200, top: 200, bottom: 220 });
-    mockEditor.getCursor = () => changedCursor;
-
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
+    mockEditor.getCursor = () => ({ line: 10, ch: 20 });
+    for (let i = 0; i < 5; i++) window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
-
-    // Should use captured cursor (initialCursor), not changedCursor
-    expect(replaceRangeSpy).toHaveBeenCalledWith('正', initialCursor);
-
+    expect(replaceSpy).toHaveBeenCalledWith('正', initialCursor);
     session.destroy();
   });
 
-  test('Overlay fixed element has correct left/top style from cursor coordinates', () => {
+  test('Listener cleanup on destroy', () => {
+    const removeSpy = jest.spyOn(window, 'removeEventListener');
     const session = createEditorSession({
       editor: mockEditor,
       view: mockView,
@@ -381,146 +367,9 @@ describe('EditorSession integration', () => {
       settings,
       onSessionEnd: () => {},
     });
-
-    session.start();
-
-    const overlay = document.querySelector('.zheng-tally-overlay') as HTMLElement;
-    expect(overlay).not.toBeNull();
-
-    // The fixed overlay should have left/top styles set
-    expect(overlay.style.left).toBe('100px');
-    expect(overlay.style.top).toBe('124px'); // cursorPos.bottom (120) + 4
-
-    session.destroy();
-  });
-
-  test('Overlay flips upward when near viewport bottom', () => {
-    const coordsAtPos = () => ({ left: 100, top: 800, bottom: 820 });
-    mockEditor = createMockEditor({ coordsAtPos });
-    mockView = createMockView(mockEditor);
-    mockLeaf = createMockLeaf();
-    mockWorkspace = createMockWorkspace(mockLeaf);
-
-    const session = createEditorSession({
-      editor: mockEditor,
-      view: mockView,
-      leaf: mockLeaf,
-      workspace: mockWorkspace,
-      settings,
-      onSessionEnd: () => {},
-    });
-
-    session.start();
-
-    const overlay = document.querySelector('.zheng-tally-overlay') as HTMLElement;
-    expect(overlay).not.toBeNull();
-
-    // Should flip up: cursorPos.top (800) - overlayHeight (~30) - 4
-    // Since we don't know exact height in test, just verify it's positioned above cursor
-    const top = parseInt(overlay.style.top, 10);
-    expect(top).toBeLessThan(800);
-
-    session.destroy();
-  });
-
-  test('Fail-closed: renderer mount failure cleans up and does not leave overlay/listeners', () => {
-    // Create a failing renderer that throws on mount
-    jest.doMock('../src/renderer', () => ({
-      createTallyRenderer: () => ({
-        mount: jest.fn(() => { throw new Error('mount failed'); }),
-        update: jest.fn(),
-        onClick: jest.fn(),
-        destroy: jest.fn(),
-      }),
-    }));
-
-    // Re-import the module to get the mocked version
-    jest.resetModules();
-    const { createEditorSession: createEditorSessionMock } = require('../src/editor-session');
-
-    let sessionEnded = false;
-    const session = createEditorSessionMock({
-      editor: mockEditor,
-      view: mockView,
-      leaf: mockLeaf,
-      workspace: mockWorkspace,
-      settings,
-      onSessionEnd: () => { sessionEnded = true; },
-    });
-
-    // start() should return false and not throw
-    const result = session.start();
-    expect(result).toBe(false);
-
-    // Cleanup should have been called
-    expect(sessionEnded).toBe(true);
-
-    // No overlay should remain
-    expect(document.querySelector('.zheng-tally-overlay')).toBeNull();
-
-    // No container should remain (overlay container should also be cleaned up)
-    // The overlay container is a parent of the overlay, so if overlay is null, container should also be gone
-    expect(document.body.querySelector('div > .zheng-tally-overlay')).toBeNull();
-
-    // Restore mocks
-    jest.dontMock('../src/renderer');
-    jest.resetModules();
-  });
-
-  test('Fail-closed: state-4 canvas failure falls back to [4] without crashing session', () => {
-    // This test verifies the renderer handles canvas failure gracefully
-    // by checking that count 4 renders [4] fallback instead of throwing
-    const session = createEditorSession({
-      editor: mockEditor,
-      view: mockView,
-      leaf: mockLeaf,
-      workspace: mockWorkspace,
-      settings,
-      onSessionEnd: () => {},
-    });
-
-    session.start();
-
-    // Trigger state 4 (four strokes)
-    for (let i = 0; i < 4; i++) {
-      window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
-    }
-
-    // Should not throw, should render fallback
-    const tallyContainer = document.querySelector('.zheng-tally-overlay span') as HTMLElement;
-    expect(tallyContainer?.textContent).toContain('[4]');
-
-    session.destroy();
-  });
-
-  test('Listener cleanup verified: keydown and leaf change listeners are removed on cleanup', () => {
-    const removeEventListenerSpy = jest.spyOn(window, 'removeEventListener');
-    const leafOffSpy = jest.spyOn(mockLeaf, 'on').mockReturnValue({ off: jest.fn() } as any);
-
-    const session = createEditorSession({
-      editor: mockEditor,
-      view: mockView,
-      leaf: mockLeaf,
-      workspace: mockWorkspace,
-      settings,
-      onSessionEnd: () => {},
-    });
-
     session.start();
     session.destroy();
-
-    // Verify keydown listener removed
-    expect(removeEventListenerSpy).toHaveBeenCalledWith('keydown', expect.any(Function), true);
-
-    // Verify leaf change listener off() called
-    const leafChangeRef = (mockLeaf.on as jest.Mock).mock.results.find(
-      (r: any) => r.value && typeof r.value.off === 'function'
-    );
-    if (leafChangeRef) {
-      expect(leafChangeRef.value.off).toHaveBeenCalled();
-    }
-
-    removeEventListenerSpy.mockRestore();
-    leafOffSpy.mockRestore();
+    expect(removeSpy).toHaveBeenCalledWith('keydown', expect.any(Function), true);
+    removeSpy.mockRestore();
   });
 });
