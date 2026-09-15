@@ -6,5 +6,8 @@ export default {
   moduleFileExtensions: ['ts', 'js', 'json'],
   collectCoverageFrom: ['src/**/*.ts', '!src/main.ts'],
   coverageDirectory: 'coverage',
-  verbose: true
+  verbose: true,
+  moduleNameMapper: {
+    '^obsidian$': '<rootDir>/tests/mocks/obsidian.ts',
+  },
 };
