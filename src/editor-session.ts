@@ -1,12 +1,22 @@
 import type { Editor, MarkdownView, WorkspaceLeaf, Workspace, EditorPosition } from 'obsidian';
 import { Component } from 'obsidian';
+import type { EditorView } from '@codemirror/view';
 import { createTallyState, type TallyState } from './tally-state';
 import {
-  createFallbackOverlayRenderer,
-  createInlineTallyRenderer,
-  type InlineTallyRenderer,
+  buildTallyChip,
+  buildGlyphCache,
+  readHostTypography,
+  type GlyphCacheEntry,
+  type ZhengTypography,
 } from './renderer';
-import { resolveEditorHost, type ResolvedEditorHost } from './editor-host';
+import { buildMaskCacheKey } from './zheng-progressive';
+import { getEditorView, resolveEditorHost } from './editor-host';
+import {
+  dispatchTallyClear,
+  dispatchTallySet,
+  readTallyAnchor,
+  setChipBuilder,
+} from './cm6-widget';
 import type { Settings } from './settings';
 
 export interface EditorSession {
@@ -62,18 +72,86 @@ function isTallyControlKey(e: KeyboardEvent): boolean {
 export function createEditorSession(deps: SessionDependencies): EditorSession {
   const { editor, view, leaf, workspace, settings, onSessionEnd } = deps;
   let state: TallyState | null = null;
-  let renderer: InlineTallyRenderer | null = null;
-  let rendererHost: HTMLElement | null = null;
+  let cmView: EditorView | null = null;
+  let hostDom: HTMLElement | null = null;
+  let baseTypo: ZhengTypography | null = null;
+  let glyphCache: GlyphCacheEntry | null = null;
   let keydownHandler: ((e: KeyboardEvent) => void) | null = null;
   let isActive = false;
+  let anchorOffset: number | null = null;
   let capturedCursor: EditorPosition | null = null;
-  let host: ResolvedEditorHost | null = null;
 
   const component = new (class extends Component {
     // Do not call cleanup() here to avoid circular dependency
     // cleanup() will call component.unload() to clean up registered events
   })();
   component.load();
+
+  function currentTypo(): ZhengTypography | null {
+    try {
+      if (hostDom) {
+        const fresh = readHostTypography(hostDom);
+        if (fresh && fresh.fontFamily && fresh.fontSize && fresh.color) return fresh;
+      }
+    } catch {
+      // Fall through to base.
+    }
+    return baseTypo;
+  }
+
+  function ensureCache(typo: ZhengTypography): GlyphCacheEntry | null {
+    try {
+      if (glyphCache && buildMaskCacheKey(typo) === glyphCache.key) return glyphCache;
+    } catch {
+      // Fall through to rebuild.
+    }
+    try {
+      const fresh = buildGlyphCache(typo);
+      glyphCache = fresh;
+      return fresh;
+    } catch {
+      return glyphCache;
+    }
+  }
+
+  function renderChip(count: number): HTMLElement {
+    const typo = currentTypo() ?? baseTypo;
+    const fallbackTypo =
+      typo ?? ({ fontFamily: 'serif', fontSize: '16px', fontWeight: '400', fontStyle: 'normal', color: 'rgb(0,0,0)', devicePixelRatio: 1 } as ZhengTypography);
+    const entry = ensureCache(fallbackTypo);
+    const chip = buildTallyChip(count, entry, fallbackTypo, () => {
+      if (state && isActive && cmView && anchorOffset !== null) {
+        state.increment();
+        refreshWidget();
+      }
+    });
+    return chip;
+  }
+
+  function currentAnchor(): number | null {
+    try {
+      if (cmView) {
+        const mapped = readTallyAnchor(cmView);
+        if (mapped !== null && Number.isFinite(mapped) && mapped >= 0) {
+          anchorOffset = mapped;
+          return mapped;
+        }
+      }
+    } catch {
+      // Fall through to captured anchor.
+    }
+    return anchorOffset;
+  }
+
+  function refreshWidget(): void {
+    if (!state || !cmView || anchorOffset === null) return;
+    const anchor = currentAnchor() ?? anchorOffset;
+    try {
+      dispatchTallySet(cmView, anchor, state.count);
+    } catch {
+      // Render failure never breaks counting session.
+    }
+  }
 
   function cleanup(): void {
     if (isActive) {
@@ -87,18 +165,23 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
 
     component.unload();
 
-    if (renderer) {
-      try {
-        renderer.destroy();
-      } catch {
-        // Ignore teardown races.
-      }
-      renderer = null;
+    try {
+      if (cmView) dispatchTallyClear(cmView);
+    } catch {
+      // Ignore teardown races.
     }
-    rendererHost = null;
+    try {
+      setChipBuilder(null);
+    } catch {
+      // Ignore teardown races.
+    }
     state = null;
+    cmView = null;
+    hostDom = null;
+    baseTypo = null;
+    glyphCache = null;
+    anchorOffset = null;
     capturedCursor = null;
-    host = null;
     onSessionEnd();
   }
 
@@ -108,9 +191,29 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
       return;
     }
     const text = settings.commitFormat === 'unicode' ? state.toUnicodeText() : state.toStableText();
+    const viewForAnchor = cmView;
+    const mapped = viewForAnchor ? currentAnchor() : anchorOffset;
+    try {
+      if (viewForAnchor) dispatchTallyClear(viewForAnchor);
+    } catch {
+      // Continue to single doc insertion.
+    }
+    try {
+      setChipBuilder(null);
+    } catch {
+      // Continue to single doc insertion.
+    }
     if (text) {
       try {
-        editor.replaceRange(text, capturedCursor);
+        let pos = capturedCursor;
+        if (mapped !== null && mapped !== undefined) {
+          try {
+            pos = editor.offsetToPos(mapped);
+          } catch {
+            pos = capturedCursor;
+          }
+        }
+        editor.replaceRange(text, pos);
       } catch {
         // Commit failure still tears down without leaking widget/listeners.
       }
@@ -131,18 +234,10 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
 
       if (e.key === ' ' || e.key === 'Spacebar' || isPlusKey(e)) {
         state.increment();
-        try {
-          renderer?.update(state.count);
-        } catch {
-          // Render failure never breaks counting session.
-        }
+        refreshWidget();
       } else if (e.key === 'Backspace' || isMinusKey(e)) {
         state.decrement();
-        try {
-          renderer?.update(state.count);
-        } catch {
-          // Render failure never breaks counting session.
-        }
+        refreshWidget();
       } else if (e.key === 'Enter') {
         commitAndClose();
       } else if (e.key === 'Escape') {
@@ -177,76 +272,66 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
 
       const resolved = resolveEditorHost(editor);
       if (!resolved) return false;
-      host = resolved;
+      const resolvedView = getEditorView(editor);
+      if (!resolvedView) return false;
 
       state = createTallyState(0);
-
-      let inline: InlineTallyRenderer | null = null;
-      try {
-        inline = createInlineTallyRenderer(host);
-      } catch {
-        inline = null;
-      }
-      if (!inline) {
-        state = null;
-        host = null;
-        return false;
-      }
-
-      try {
-        host.dom.appendChild(inline.element);
-      } catch {
-        try {
-          inline.destroy();
-        } catch {
-          // Ignore teardown races.
-        }
-        let fallback: InlineTallyRenderer | null = null;
-        try {
-          fallback = createFallbackOverlayRenderer(host.typography);
-          document.body.appendChild(fallback.element);
-        } catch {
-          fallback = null;
-        }
-        if (!fallback) {
-          state = null;
-          host = null;
-          return false;
-        }
-        inline = fallback;
-        rendererHost = document.body;
-      }
-      if (!rendererHost) rendererHost = host.dom;
-      renderer = inline;
-
-      try {
-        renderer.update(0);
-      } catch {
-        cleanup();
-        return false;
-      }
+      cmView = resolvedView;
+      hostDom = resolved.dom;
+      baseTypo = resolved.typography;
+      anchorOffset = resolved.offset;
+      glyphCache = null;
 
       try {
         capturedCursor = editor.getCursor();
       } catch {
-        cleanup();
+        state = null;
+        cmView = null;
+        hostDom = null;
+        baseTypo = null;
+        anchorOffset = null;
         return false;
       }
       if (!capturedCursor) {
-        cleanup();
+        state = null;
+        cmView = null;
+        hostDom = null;
+        baseTypo = null;
+        anchorOffset = null;
         return false;
       }
 
-      renderer.onClick(() => {
-        if (state) {
-          state.increment();
-          try {
-            renderer?.update(state.count);
-          } catch {
-            // Ignore render failures on click.
-          }
+      try {
+        setChipBuilder((count: number) => renderChip(count));
+      } catch {
+        state = null;
+        cmView = null;
+        hostDom = null;
+        baseTypo = null;
+        anchorOffset = null;
+        return false;
+      }
+
+      let mounted = false;
+      try {
+        mounted = dispatchTallySet(cmView, anchorOffset, 0);
+      } catch {
+        mounted = false;
+      }
+      if (!mounted) {
+        try {
+          setChipBuilder(null);
+        } catch {
+          // Ignore teardown races.
         }
-      });
+        state = null;
+        cmView = null;
+        hostDom = null;
+        baseTypo = null;
+        anchorOffset = null;
+        capturedCursor = null;
+        return false;
+      }
 
       try {
         keydownHandler = handleKeydown;

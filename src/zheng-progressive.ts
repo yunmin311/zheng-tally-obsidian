@@ -102,6 +102,10 @@ export interface ZhengMaskResult {
     gapY2: number;
     midTop: number;
     midBot: number;
+    topTop: number;
+    topBot: number;
+    botTop: number;
+    botBot: number;
     leftL: number;
     leftR: number;
     centralL: number;
@@ -277,6 +281,20 @@ export function analyzeZhengMasks(
     return { valid: false, reason: 'middle-band-too-wide' };
   }
 
+  // Directional thickness gates (tight, 0.5 level) for top/bottom horizontals.
+  // Intermediate states are cleaned subsets: junction-mixed alpha may be hidden
+  // until state 5, which always restores the full original glyph.
+  const topThresh = sR[gapY1] + (topPeak - sR[gapY1]) * 0.5;
+  let topTop = yTopPeak;
+  while (topTop > y0 && sR[topTop - 1] > topThresh) topTop--;
+  let topBot = yTopPeak;
+  while (topBot < gapY1 && sR[topBot + 1] > topThresh) topBot++;
+  const botThresh = sR[gapY2] + (botPeak - sR[gapY2]) * 0.5;
+  let botTop = yBotPeak;
+  while (botTop > gapY2 && sR[botTop - 1] > botThresh) botTop--;
+  let botBot = yBotPeak;
+  while (botBot < y1 && sR[botBot + 1] > botThresh) botBot++;
+
   const wxlo = x0 + Math.round(bw * 0.28);
   const wxhi = x0 + Math.round(bw * 0.48);
   if (wxlo > wxhi) return { valid: false, reason: 'bad-x-window' };
@@ -345,10 +363,34 @@ export function analyzeZhengMasks(
   const masks: Uint8Array[] = [];
   for (let k = 0; k < 5; k++) masks.push(new Uint8Array(width * height));
 
+  // Directional gating: intermediate states are cleaned subsets. Junction-mixed
+  // alpha failing its owner's gate stays hidden until state 5 (full restore).
+  // Below-stroke slack is intentionally zero so no future tail forms:
+  // S1 keeps only top-band rows, S3 only middle-band rows.
+  const AA = 1;
+  const passS1 = (_x: number, y: number): boolean => y >= topTop - AA && y <= topBot;
+  const passS2 = (x: number, y: number): boolean =>
+    x >= centralL - AA && x <= centralR + AA && y >= yTop - AA && y <= yBot + AA;
+  const passS3 = (_x: number, y: number): boolean => y >= midTop - AA && y <= midBot;
+  const passS4 = (x: number, y: number): boolean =>
+    x >= leftL - AA && x <= leftR + AA && y >= yMid - AA && y <= yBot + AA;
+
+  for (let yy = 0; yy < height; yy++) {
+    for (let xx = 0; xx < width; xx++) {
+      const i = yy * width + xx;
+      const s = strokeOf[i];
+      if (s === 0) continue;
+      const gated =
+        s === 1 ? passS1(xx, yy) : s === 2 ? passS2(xx, yy) : s === 3 ? passS3(xx, yy) : s === 4 ? passS4(xx, yy) : true;
+      if (!gated) continue;
+      for (let k = s - 1; k < 4; k++) masks[k][i] = 1;
+      masks[4][i] = 1;
+    }
+  }
+  // State 5 always restores the complete original glyph pixel-for-pixel.
   for (let i = 0; i < alpha.length; i++) {
-    const s = strokeOf[i];
-    if (s === 0) continue;
-    for (let k = s - 1; k < 5; k++) masks[k][i] = 1;
+    if (alpha[i] > 0) masks[4][i] = 1;
+    else masks[4][i] = 0;
   }
 
   const sums = masks.map((m) => {
@@ -391,6 +433,10 @@ export function analyzeZhengMasks(
       gapY2,
       midTop,
       midBot,
+      topTop,
+      topBot,
+      botTop,
+      botBot,
       leftL,
       leftR,
       centralL,
