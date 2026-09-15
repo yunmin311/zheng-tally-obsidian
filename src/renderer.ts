@@ -8,7 +8,6 @@ import {
   parseCssSize,
   recolorWithMask,
 } from './zheng-progressive';
-import type { ResolvedEditorHost } from './editor-host';
 
 export type { ZhengTypography };
 export type EditorTypography = ZhengTypography;
@@ -58,7 +57,7 @@ export function applyTypography(el: HTMLElement, typo: ZhengTypography): void {
   el.style.color = typo.color;
 }
 
-interface GlyphCacheEntry {
+export interface GlyphCacheEntry {
   key: string;
   width: number;
   height: number;
@@ -116,7 +115,7 @@ function rasterizeZhengAlpha(
   }
 }
 
-function buildGlyphCache(typo: ZhengTypography): GlyphCacheEntry | null {
+export function buildGlyphCache(typo: ZhengTypography): GlyphCacheEntry | null {
   const key = buildMaskCacheKey(typo);
   const raster = rasterizeZhengAlpha(typo);
   if (!raster) return null;
@@ -232,67 +231,31 @@ function renderCountInto(
 }
 
 /**
- * Inline tally widget anchored inside the CM6 editor DOM (normal path).
- * Not position:fixed; lives at the cursor line as a transient chip.
+ * True inline chip for CM6 Decoration.widget. Participates in editor layout
+ * (inline-flex, no absolute/fixed, no editor-root style changes).
  */
-export function createInlineTallyRenderer(host: ResolvedEditorHost): InlineTallyRenderer {
-  const initialTypo = host.typography;
-  let clickCallback: (() => void) | null = null;
-  let glyphCache: GlyphCacheEntry | null = null;
-  let glyphCacheFailed = false;
-  let prevHostPosition = '';
-
-  const root = document.createElement('span');
-  root.className = 'zheng-tally-inline';
-  root.setAttribute('data-inline-widget', 'true');
-
-  function ensurePositionContext(): void {
-    try {
-      const cs = getComputedStyle(host.dom);
-      prevHostPosition = host.dom.style.position || '';
-      if (!cs || cs.position === 'static') {
-        host.dom.style.position = 'relative';
-      }
-    } catch {
-      // Positioning context is best-effort; widget still renders inline.
-    }
-  }
-
-  function restorePositionContext(): void {
-    try {
-      host.dom.style.position = prevHostPosition;
-    } catch {
-      // Ignore restore failures during teardown.
-    }
-  }
-
-  function placeAtCursor(): void {
-    try {
-      const domRect = host.dom.getBoundingClientRect();
-      const left = host.coords.left - domRect.left;
-      const top = host.coords.bottom - domRect.top + 4;
-      root.style.left = `${Math.max(0, left)}px`;
-      root.style.top = `${Math.max(0, top)}px`;
-    } catch {
-      root.style.left = '0px';
-      root.style.top = '1.2em';
-    }
-  }
-
+export function buildTallyChip(
+  count: number,
+  entry: GlyphCacheEntry | null,
+  typo: ZhengTypography,
+  onClick: (() => void) | null,
+): HTMLElement {
   const chip = document.createElement('span');
+  chip.className = 'zheng-tally-inline';
+  chip.setAttribute('data-inline-widget', 'true');
   chip.style.cssText = `
     display: inline-flex;
     align-items: center;
     gap: 0.35em;
-    padding: 0.15em 0.4em;
+    padding: 0.1em 0.35em;
+    margin: 0 0.15em;
     background: var(--background-secondary);
     border: 1px solid var(--background-modifier-border);
     border-radius: 4px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
     white-space: nowrap;
     vertical-align: text-bottom;
   `;
-  applyTypography(chip, initialTypo);
+  applyTypography(chip, typo);
 
   const tallyContainer = document.createElement('span');
   tallyContainer.style.cssText = `
@@ -301,7 +264,7 @@ export function createInlineTallyRenderer(host: ResolvedEditorHost): InlineTally
     line-height: 1;
     background: transparent;
   `;
-  applyTypography(tallyContainer, initialTypo);
+  applyTypography(tallyContainer, typo);
 
   const countDisplay = document.createElement('span');
   countDisplay.style.cssText = `
@@ -310,87 +273,21 @@ export function createInlineTallyRenderer(host: ResolvedEditorHost): InlineTally
     font-variant-numeric: tabular-nums;
     background: transparent;
   `;
-  applyTypography(countDisplay, initialTypo);
+  applyTypography(countDisplay, typo);
 
   chip.appendChild(tallyContainer);
   chip.appendChild(countDisplay);
-  root.appendChild(chip);
-
-  root.style.cssText += `
-    position: absolute;
-    z-index: 50;
-    pointer-events: auto;
-    background: transparent;
-  `;
-
-  chip.addEventListener('click', () => {
-    if (clickCallback) clickCallback();
-  });
-
-  function ensureGlyphCache(typo: ZhengTypography): GlyphCacheEntry | null {
-    const key = buildMaskCacheKey(typo);
-    if (glyphCache && glyphCache.key === key) return glyphCache;
-    const fresh = buildGlyphCache(typo);
-    if (fresh) {
-      glyphCache = fresh;
-      glyphCacheFailed = false;
-      return glyphCache;
-    }
-    if (!glyphCache || glyphCache.key !== key) {
-      glyphCache = null;
-      glyphCacheFailed = true;
-    }
-    void glyphCacheFailed;
-    return null;
+  renderCountInto(tallyContainer, countDisplay, count, typo, entry);
+  if (onClick) {
+    chip.addEventListener('click', () => {
+      onClick();
+    });
   }
-
-  function currentTypo(): ZhengTypography {
-    try {
-      const fresh = readHostTypography(host.dom);
-      if (fresh && fresh.fontFamily && fresh.fontSize && fresh.color) return fresh;
-    } catch {
-      // Fall through to initial.
-    }
-    return initialTypo;
-  }
-
-  function render(count: number): void {
-    const typo = currentTypo();
-    const entry = ensureGlyphCache(typo);
-    renderCountInto(tallyContainer, countDisplay, count, typo, entry);
-  }
-
-  ensurePositionContext();
-  placeAtCursor();
-
-  return {
-    get element() {
-      return root;
-    },
-    get isFallback() {
-      return false;
-    },
-    update(count: number) {
-      render(count);
-    },
-    onClick(callback: () => void) {
-      clickCallback = callback;
-    },
-    destroy() {
-      try {
-        if (root.parentNode) root.parentNode.removeChild(root);
-      } catch {
-        // Ignore teardown races.
-      }
-      restorePositionContext();
-      glyphCache = null;
-      clickCallback = null;
-    },
-  };
+  return chip;
 }
 
 /**
- * Explicit fixed-overlay fallback only. Normal path must use inline widget.
+ * Explicit fixed-overlay fallback only. Normal path must use Decoration widget.
  * Marked with data-fallback-mode="fixed" so tests and smoke checks can tell.
  */
 export function createFallbackOverlayRenderer(typo: ZhengTypography): InlineTallyRenderer {

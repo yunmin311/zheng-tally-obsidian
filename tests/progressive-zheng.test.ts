@@ -8,7 +8,11 @@ import {
   parseCssColor,
   type ZhengTypography,
 } from '../src/zheng-progressive';
-import { createInlineTallyRenderer, readHostTypography } from '../src/renderer';
+import {
+  buildGlyphCache,
+  buildTallyChip,
+  readHostTypography,
+} from '../src/renderer';
 import { resolveEditorHost } from '../src/editor-host';
 
 // ---------------------------------------------------------------------------
@@ -261,7 +265,7 @@ describe('progressive-zheng: color / mask cache separation', () => {
   });
 });
 
-describe('progressive-zheng: inline renderer DOM + theme', () => {
+describe('progressive-zheng: true inline chip DOM + theme', () => {
   const mockHost = (color = 'rgb(0, 0, 0)') => {
     const dom = document.createElement('div');
     dom.style.fontFamily = 'SimSun, serif';
@@ -284,58 +288,50 @@ describe('progressive-zheng: inline renderer DOM + theme', () => {
     return { dom, editor, host };
   };
 
+  const chipFor = (n: number, color = 'rgb(0, 0, 0)') => {
+    const { host } = mockHost(color);
+    const entry = buildGlyphCache(host.typography);
+    return buildTallyChip(n, entry, host.typography, null);
+  };
+
   afterEach(() => {
     document.body.innerHTML = '';
   });
 
-  test('inline widget is normal path (not position:fixed)', () => {
-    const { dom, host } = mockHost();
-    const renderer = createInlineTallyRenderer(host);
-    expect(renderer.isFallback).toBe(false);
-    expect(renderer.element.className).toContain('zheng-tally-inline');
-    expect(renderer.element.style.position).not.toBe('fixed');
-    dom.appendChild(renderer.element);
-    renderer.update(3);
-    expect(renderer.element.querySelector('[data-state="3"]')).not.toBeNull();
-    renderer.destroy();
-    expect(dom.querySelector('.zheng-tally-inline')).toBeNull();
+  test('true inline chip participates in layout (not absolute/fixed)', () => {
+    const chip = chipFor(3);
+    expect(chip.className).toContain('zheng-tally-inline');
+    expect(chip.style.position).not.toBe('absolute');
+    expect(chip.style.position).not.toBe('fixed');
+    expect(chip.querySelector('[data-state="3"]')).not.toBeNull();
   });
 
-  test('fallback does not throw when rasterization is unavailable (jsdom)', () => {
-    const { host } = mockHost();
-    let renderer;
-    expect(() => {
-      renderer = createInlineTallyRenderer(host);
-    }).not.toThrow();
+  test('chip build does not throw when rasterization is unavailable (jsdom fallback [N])', () => {
     for (const n of [1, 2, 3, 4, 5]) {
-      expect(() => renderer!.update(n)).not.toThrow();
+      let el: HTMLElement | null = null;
+      expect(() => {
+        el = chipFor(n);
+      }).not.toThrow();
+      expect(el!).not.toBeNull();
     }
-    expect(() => renderer!.destroy()).not.toThrow();
   });
 
   test('states 1-3 never render 一/丁/下; states use canvas or explicit [N] fallback', () => {
-    const { dom, host } = mockHost();
-    const renderer = createInlineTallyRenderer(host);
-    dom.appendChild(renderer.element);
     for (const n of [1, 2, 3]) {
-      renderer.update(n);
-      const text = renderer.element.textContent || '';
+      const el = chipFor(n);
+      const text = el.textContent || '';
       expect(text).not.toContain('一');
       expect(text).not.toContain('丁');
       expect(text).not.toContain('下');
-      const hasCanvas = renderer.element.querySelector('canvas') !== null;
+      const hasCanvas = el.querySelector('canvas') !== null;
       const hasFallback = text.includes(`[${n}]`);
       expect(hasCanvas || hasFallback).toBe(true);
     }
-    renderer.destroy();
   });
 
   test('inline CSS contains no hardcoded light/dark backgrounds and no fixed overlay', () => {
-    const { dom, host } = mockHost();
-    const renderer = createInlineTallyRenderer(host);
-    dom.appendChild(renderer.element);
-    renderer.update(2);
-    const css = `${renderer.element.innerHTML} ${(renderer.element as HTMLElement).style.cssText}`;
+    const el = chipFor(2);
+    const css = `${el.innerHTML} ${el.style.cssText}`;
     expect(css).not.toMatch(/#fff/i);
     expect(css).not.toMatch(/#fafafa/i);
     expect(css).not.toMatch(/#ccc/i);
@@ -344,25 +340,35 @@ describe('progressive-zheng: inline renderer DOM + theme', () => {
     expect(src).toContain('--background-modifier-border');
     expect(src).not.toMatch(/--background-secondary,\s*#[0-9a-fA-F]{3,6}/);
     expect(src).not.toMatch(/--background-modifier-border,\s*#[0-9a-fA-F]{3,6}/);
-    // Normal inline element must not be fixed; fixed only in explicit fallback.
-    expect((renderer.element as HTMLElement).style.position).toBe('absolute');
-    renderer.destroy();
+    // Normal chip must not be positioned; fixed only in explicit fallback.
+    expect(el.style.position).not.toBe('absolute');
+    expect(el.style.position).not.toBe('fixed');
+    const rendererSrc = src;
+    expect(rendererSrc).toContain('data-fallback-mode');
   });
 
   test('count 18 renders three complete 正 + progressive state 3 (no 一/丁/下)', () => {
-    const { dom, host } = mockHost();
-    const renderer = createInlineTallyRenderer(host);
-    dom.appendChild(renderer.element);
-    renderer.update(18);
-    const fulls = renderer.element.querySelectorAll('[data-full="true"]');
-    const partial = renderer.element.querySelector('[data-state="3"]');
+    const el = chipFor(18);
+    const fulls = el.querySelectorAll('[data-full="true"]');
+    const partial = el.querySelector('[data-state="3"]');
     expect(fulls.length).toBe(3);
     expect(partial).not.toBeNull();
-    const text = renderer.element.textContent || '';
+    const text = el.textContent || '';
     expect(text).not.toContain('下');
     expect(text).not.toContain('一');
     expect(text).not.toContain('丁');
-    renderer.destroy();
+  });
+
+  test('production normal path has no absolute/fixed inline positioning', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.ts'), 'utf8');
+    // buildTallyChip (normal path) must not set absolute/fixed positioning.
+    const chipStart = src.indexOf('export function buildTallyChip');
+    const fallbackStart = src.indexOf('export function createFallbackOverlayRenderer');
+    const chipFn = src.slice(chipStart, fallbackStart);
+    const fallbackFn = src.slice(fallbackStart);
+    expect(chipFn).not.toMatch(/position\s*:\s*absolute/);
+    expect(chipFn).not.toMatch(/position\s*:\s*fixed/);
+    expect(fallbackFn).toMatch(/data-fallback-mode/);
   });
 
   test('readHostTypography reads family/size/weight/style/color + DPR', () => {

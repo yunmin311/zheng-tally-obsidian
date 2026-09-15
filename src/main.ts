@@ -1,6 +1,7 @@
 import { Plugin, MarkdownView, Notice, type Editor, type MarkdownFileInfo } from 'obsidian';
 import { loadSettings, type Settings } from './settings';
 import { createEditorSession, type EditorSession } from './editor-session';
+import { tallyExtension } from './cm6-widget';
 
 export default class ZhengTallyPlugin extends Plugin {
   declare settings: Settings;
@@ -8,6 +9,7 @@ export default class ZhengTallyPlugin extends Plugin {
 
   async onload(): Promise<void> {
     this.settings = await loadSettings(this);
+    this.registerEditorExtension(tallyExtension);
 
     this.addCommand({
       id: 'zheng-tally:start',

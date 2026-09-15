@@ -1,4 +1,5 @@
 import type { Editor, EditorPosition } from 'obsidian';
+import type { EditorView } from '@codemirror/view';
 import type { ZhengTypography } from './zheng-progressive';
 
 export interface ScreenCoords {
@@ -54,6 +55,17 @@ function getCmView(editor: Editor): CmViewLike | null {
     const cm = withCm.cm as CmViewLike;
     if (!cm || typeof cm !== 'object') return null;
     return cm;
+  } catch {
+    return null;
+  }
+}
+
+/** The one place that unwraps the CM6 EditorView from an Obsidian editor. */
+export function getEditorView(editor: Editor): EditorView | null {
+  try {
+    const cm = getCmView(editor);
+    if (!cm) return null;
+    return cm as unknown as EditorView;
   } catch {
     return null;
   }
