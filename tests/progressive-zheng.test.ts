@@ -42,12 +42,14 @@ function buildSyntheticZhengAlpha(): Uint8Array {
   fillRect(10, 17, 29, 19); // middle Heng
   fillRect(10, 17, 12, 32); // left Shu
   fillRect(8, 31, 31, 33); // bottom Heng
-  set(8, 5, 128);
-  set(31, 5, 96);
-  set(7, 7, 64);
-  set(32, 32, 140);
-  set(9, 30, 110);
-  set(20, 5, 77);
+  // In-band anti-aliased edge pixels (partial alpha inside true strokes).
+  set(9, 6, 128);
+  set(19, 18, 96);
+  set(11, 25, 140);
+  set(25, 32, 110);
+  // Isolated single-pixel noise: no directional continuity, hidden until S5.
+  set(8, 5, 77);
+  set(32, 5, 64);
   return alpha;
 }
 
@@ -117,11 +119,14 @@ describe('progressive-zheng: pure alpha/mask analysis (synthetic bitmap, no font
     const res = analyzeZhengMasks(alpha, SW, SH);
     expect(res.valid).toBe(true);
     const rgb: [number, number, number] = [10, 20, 30];
-    const fringeIdx = 5 * SW + 8;
-    expect(alpha[fringeIdx]).toBe(128);
-    expect(res.masks![0][fringeIdx]).toBe(1);
+    // In-band partial pixels keep exact alpha in their stroke state.
+    const topFringe = 6 * SW + 9; // (9,6) top edge, structural
+    expect(alpha[topFringe]).toBe(128);
+    expect(res.masks![0][topFringe]).toBe(1);
     const rgba = recolorWithMask(alpha, res.masks![0], rgb, SW, SH);
-    expect(rgba[fringeIdx * 4 + 3]).toBe(128);
+    expect(rgba[topFringe * 4 + 3]).toBe(128);
+    const midFringe = 18 * SW + 19; // (19,18) middle band
+    expect(res.masks![2][midFringe]).toBe(1);
     for (const mask of res.masks!) {
       const out = recolorWithMask(alpha, mask, rgb, SW, SH);
       for (let i = 0; i < alpha.length; i++) {
@@ -130,9 +135,15 @@ describe('progressive-zheng: pure alpha/mask analysis (synthetic bitmap, no font
         }
       }
     }
+    // Isolated noise has no directional continuity: hidden until S5.
+    const noise = 5 * SW + 8; // (8,5)
+    expect(alpha[noise]).toBe(77);
+    expect(res.masks![0][noise]).toBe(0);
+    expect(res.masks![3][noise]).toBe(0);
+    expect(res.masks![4][noise]).toBe(1);
   });
 
-  test('stroke ownership: state1 has no central nub', () => {
+  test('stroke ownership: state1 has no central nub (exact zero)', () => {
     const alpha = buildSyntheticZhengAlpha();
     const res = analyzeZhengMasks(alpha, SW, SH);
     expect(res.valid).toBe(true);
@@ -143,9 +154,16 @@ describe('progressive-zheng: pure alpha/mask analysis (synthetic bitmap, no font
         expect(m1[y * SW + x]).toBe(0);
       }
     }
+    // No ink at all below the top band in state 1.
+    const top = res.meta!.top;
+    for (let y = top[1] + 1; y < SH; y++) {
+      for (let x = 0; x < SW; x++) {
+        expect(m1[y * SW + x]).toBe(0);
+      }
+    }
   });
 
-  test('stroke ownership: state3 has no left vertical body', () => {
+  test('stroke ownership: state3 has no left vertical body (exact zero)', () => {
     const alpha = buildSyntheticZhengAlpha();
     const res = analyzeZhengMasks(alpha, SW, SH);
     expect(res.valid).toBe(true);
@@ -162,7 +180,7 @@ describe('progressive-zheng: pure alpha/mask analysis (synthetic bitmap, no font
     }
   });
 
-  test('stroke ownership: state4 has no bottom side arms', () => {
+  test('stroke ownership: state4 has no bottom side arms (exact zero)', () => {
     const alpha = buildSyntheticZhengAlpha();
     const res = analyzeZhengMasks(alpha, SW, SH);
     expect(res.valid).toBe(true);
