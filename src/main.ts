@@ -2,6 +2,7 @@ import { Plugin, MarkdownView, Notice, type Editor, type MarkdownFileInfo } from
 import { loadSettings, type Settings } from './settings';
 import { createEditorSession, type EditorSession } from './editor-session';
 import { tallyExtension } from './cm6-widget';
+import { registerTallyHover } from './tally-hover';
 
 export default class ZhengTallyPlugin extends Plugin {
   declare settings: Settings;
@@ -10,6 +11,7 @@ export default class ZhengTallyPlugin extends Plugin {
   async onload(): Promise<void> {
     this.settings = await loadSettings(this);
     this.registerEditorExtension(tallyExtension);
+    registerTallyHover(this);
 
     this.addCommand({
       id: 'zheng-tally:start',

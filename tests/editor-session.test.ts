@@ -198,13 +198,15 @@ describe('EditorSession integration (true CM6 Decoration widget)', () => {
     session.destroy();
   });
 
-  test('count 18: three full + state3, no 一/丁/下 text', () => {
+  test('count 18 compacts preview but keeps total, no 一/丁/下 text', () => {
     const session = startSession();
     session.start();
     for (let i = 0; i < 18; i++) window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
     const widget = queryWidget()!;
-    expect(widget.querySelectorAll('[data-full="true"]').length).toBe(3);
+    expect(widget.querySelectorAll('[data-full="true"]').length).toBe(2);
+    expect(widget.querySelector('.zt-ellipsis')).not.toBeNull();
     expect(widget.querySelector('[data-state="3"]')).not.toBeNull();
+    expect(widget.querySelector('.zt-total')?.textContent).toBe('18');
     expect(widget.textContent).not.toContain('一');
     session.destroy();
   });

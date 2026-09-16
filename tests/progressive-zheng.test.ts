@@ -9,7 +9,7 @@ import {
   type ZhengTypography,
 } from '../src/zheng-progressive';
 import {
-  buildGlyphCache,
+  buildFallbackChip,
   buildTallyChip,
   readHostTypography,
 } from '../src/renderer';
@@ -383,8 +383,7 @@ describe('progressive-zheng: true inline chip DOM + theme', () => {
 
   const chipFor = (n: number, color = 'rgb(0, 0, 0)') => {
     const { host } = mockHost(color);
-    const entry = buildGlyphCache(host.typography);
-    return buildTallyChip(n, entry, host.typography, null);
+    return buildTallyChip(n, host.typography, null);
   };
 
   afterEach(() => {
@@ -409,16 +408,16 @@ describe('progressive-zheng: true inline chip DOM + theme', () => {
     }
   });
 
-  test('states 1-3 never render 一/丁/下; states use canvas or explicit [N] fallback', () => {
-    for (const n of [1, 2, 3]) {
+  test('states 1-5 render canonical vector strokes (no 一/丁/下 text)', () => {
+    for (const n of [1, 2, 3, 4, 5]) {
       const el = chipFor(n);
+      const svg = el.querySelector('svg.zt-svg');
+      expect(svg).not.toBeNull();
+      expect(svg!.querySelectorAll('path').length).toBe(n);
       const text = el.textContent || '';
       expect(text).not.toContain('一');
       expect(text).not.toContain('丁');
       expect(text).not.toContain('下');
-      const hasCanvas = el.querySelector('canvas') !== null;
-      const hasFallback = text.includes(`[${n}]`);
-      expect(hasCanvas || hasFallback).toBe(true);
     }
   });
 
@@ -440,16 +439,28 @@ describe('progressive-zheng: true inline chip DOM + theme', () => {
     expect(rendererSrc).toContain('data-fallback-mode');
   });
 
-  test('count 18 renders three complete 正 + progressive state 3 (no 一/丁/下)', () => {
-    const el = chipFor(18);
-    const fulls = el.querySelectorAll('[data-full="true"]');
-    const partial = el.querySelector('[data-state="3"]');
-    expect(fulls.length).toBe(3);
-    expect(partial).not.toBeNull();
-    const text = el.textContent || '';
+  test('count <= 15 shows every group; count 18 compacts but keeps total', () => {
+    const el8 = chipFor(8);
+    expect(el8.querySelectorAll('[data-full="true"]').length).toBe(1);
+    expect(el8.querySelector('[data-state="3"]')).not.toBeNull();
+    expect(el8.querySelector('.zt-ellipsis')).toBeNull();
+    expect(el8.querySelector('.zt-total')?.textContent).toBe('8');
+    const el18 = chipFor(18);
+    expect(el18.querySelectorAll('[data-full="true"]').length).toBe(2);
+    expect(el18.querySelector('.zt-ellipsis')).not.toBeNull();
+    expect(el18.querySelector('[data-state="3"]')).not.toBeNull();
+    expect(el18.querySelector('.zt-total')?.textContent).toBe('18');
+    expect(el18.getAttribute('data-count')).toBe('18');
+    const text = el18.textContent || '';
     expect(text).not.toContain('下');
     expect(text).not.toContain('一');
     expect(text).not.toContain('丁');
+  });
+
+  test('fallback chip is explicit text (catastrophic path only)', () => {
+    const { host } = mockHost();
+    const el = buildFallbackChip(3, host.typography);
+    expect(el.getAttribute('data-fallback')).toBe('text');
   });
 
   test('production normal path has no absolute/fixed inline positioning', () => {
