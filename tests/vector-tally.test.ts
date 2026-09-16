@@ -158,6 +158,21 @@ describe('vector-tally: hover count badge', () => {
     expect(parseStableTokens('hello', 0)).toEqual([]);
   });
 
+  test('parseStableTokens accepts explicit boundaries', () => {
+    expect(parseStableTokens('foo 正正正·3 bar', 0)).toEqual([{ from: 4, to: 9, count: 18 }]);
+    expect(parseStableTokens('（正正）', 0)).toEqual([{ from: 1, to: 3, count: 10 }]);
+    expect(parseStableTokens('计数：正·2。', 0)).toEqual([{ from: 3, to: 6, count: 7 }]);
+    expect(parseStableTokens('·3', 0)).toEqual([{ from: 0, to: 2, count: 3 }]);
+  });
+
+  test('parseStableTokens rejects ordinary-prose false positives', () => {
+    expect(parseStableTokens('正正好', 0)).toEqual([]);
+    expect(parseStableTokens('正正方方', 0)).toEqual([]);
+    expect(parseStableTokens('测试正正内容', 0)).toEqual([]);
+    expect(parseStableTokens('第·3项', 0)).toEqual([]);
+    expect(parseStableTokens('AAA正正正·3BBB', 0)).toEqual([]);
+  });
+
   test('CountBadge renders themed count, ignores events', () => {
     const badge = new CountBadge(18);
     const el = badge.toDOM();
