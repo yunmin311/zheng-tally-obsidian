@@ -14,8 +14,30 @@ export interface StableToken {
  * - "正".repeat(k) + "·r" -> 5k + r
  * - "正".repeat(k), k >= 2 -> 5k (a lone bare 正 is left alone: it is far too
  *   common in ordinary Chinese prose to badge every one of them)
+ *
+ * Conservative token boundary (deliberate design limit, no heuristics):
+ * a candidate only counts when BOTH neighbours are a hard boundary, i.e.
+ * start/end of document, whitespace, punctuation or symbol. Inside ordinary
+ * Han/Latin/digit runs there is no badge: 正正好, 正正方方, 测试正正内容 and
+ * 第·3项 must NOT badge. Both the hover and the caret path share this parser.
  */
 const STABLE_TOKEN_RE = /(正{2,}(?:·[1-4])?|正·[1-4]|·[1-4])/g;
+
+/**
+ * A neighbour breaks the boundary when it could continue ordinary prose:
+ * any letter (Han included), any number, `_`, or a tally char itself.
+ * Everything else (whitespace, punctuation, symbols, string ends) is a
+ * boundary. `正` is already covered by \p{L}; `·` (U+00B7, Po) is explicit.
+ */
+const BOUNDARY_BREAK_RE = /[\p{L}\p{N}_·]/u;
+
+function hasTokenBoundary(text: string, from: number, to: number): boolean {
+  const prev = from > 0 ? text[from - 1] : '';
+  if (prev && BOUNDARY_BREAK_RE.test(prev)) return false;
+  const next = to < text.length ? text[to] : '';
+  if (next && BOUNDARY_BREAK_RE.test(next)) return false;
+  return true;
+}
 
 export function parseStableTokens(text: string, baseOffset: number): StableToken[] {
   const out: StableToken[] = [];
@@ -25,6 +47,7 @@ export function parseStableTokens(text: string, baseOffset: number): StableToken
     while ((m = STABLE_TOKEN_RE.exec(text)) !== null) {
       const token = m[0];
       if (!token) continue;
+      if (!hasTokenBoundary(text, m.index, m.index + token.length)) continue;
       const start = baseOffset + m.index;
       const end = start + token.length;
       let count: number | null = null;
