@@ -4,12 +4,9 @@ import type { EditorView } from '@codemirror/view';
 import { createTallyState, type TallyState } from './tally-state';
 import {
   buildTallyChip,
-  buildGlyphCache,
   readHostTypography,
-  type GlyphCacheEntry,
   type ZhengTypography,
 } from './renderer';
-import { buildMaskCacheKey } from './zheng-progressive';
 import { getEditorView, resolveEditorHost } from './editor-host';
 import {
   dispatchTallyClear,
@@ -75,7 +72,6 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
   let cmView: EditorView | null = null;
   let hostDom: HTMLElement | null = null;
   let baseTypo: ZhengTypography | null = null;
-  let glyphCache: GlyphCacheEntry | null = null;
   let keydownHandler: ((e: KeyboardEvent) => void) | null = null;
   let isActive = false;
   let anchorOffset: number | null = null;
@@ -99,33 +95,17 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
     return baseTypo;
   }
 
-  function ensureCache(typo: ZhengTypography): GlyphCacheEntry | null {
-    try {
-      if (glyphCache && buildMaskCacheKey(typo) === glyphCache.key) return glyphCache;
-    } catch {
-      // Fall through to rebuild.
-    }
-    try {
-      const fresh = buildGlyphCache(typo);
-      glyphCache = fresh;
-      return fresh;
-    } catch {
-      return glyphCache;
-    }
-  }
-
   function renderChip(count: number): HTMLElement {
-    const typo = currentTypo() ?? baseTypo;
-    const fallbackTypo =
-      typo ?? ({ fontFamily: 'serif', fontSize: '16px', fontWeight: '400', fontStyle: 'normal', color: 'rgb(0,0,0)', devicePixelRatio: 1 } as ZhengTypography);
-    const entry = ensureCache(fallbackTypo);
-    const chip = buildTallyChip(count, entry, fallbackTypo, () => {
+    const typo =
+      currentTypo() ??
+      baseTypo ??
+      ({ fontFamily: 'serif', fontSize: '16px', fontWeight: '400', fontStyle: 'normal', color: 'rgb(0,0,0)', devicePixelRatio: 1 } as ZhengTypography);
+    return buildTallyChip(count, typo, () => {
       if (state && isActive && cmView && anchorOffset !== null) {
         state.increment();
         refreshWidget();
       }
     });
-    return chip;
   }
 
   function currentAnchor(): number | null {
@@ -179,7 +159,6 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
     cmView = null;
     hostDom = null;
     baseTypo = null;
-    glyphCache = null;
     anchorOffset = null;
     capturedCursor = null;
     onSessionEnd();
@@ -280,7 +259,6 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
       hostDom = resolved.dom;
       baseTypo = resolved.typography;
       anchorOffset = resolved.offset;
-      glyphCache = null;
 
       try {
         capturedCursor = editor.getCursor();
