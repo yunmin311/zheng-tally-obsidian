@@ -1,5 +1,14 @@
+# 构建产物与依赖
 node_modules/
 dist/
+coverage/
+
+# 运行时状态：记录 vault 内的笔记路径与使用痕迹，属用户数据而非插件代码。
+# 它由 Obsidian 写在 <vault>/.obsidian/plugins/<id>/data.json，正常不会进仓库，
+# 但手工拷贝插件目录时很容易带进来 —— 显式排除掉。
+data.json
+
+# 日志与编辑器临时文件
 *.log
 .DS_Store
-coverage/
+Thumbs.db
