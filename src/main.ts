@@ -24,7 +24,9 @@ export default class ZhengTallyPlugin extends Plugin {
     );
 
     this.addCommand({
-      id: 'zheng-tally:start',
+      // NOTE: Obsidian prefixes command IDs with the plugin ID automatically,
+      // so the bare `start` ID is a submission-compliance requirement.
+      id: 'start',
       name: 'Start Zheng Tally counting',
       hotkeys: [{ modifiers: ['Alt'], key: 'z' }],
       editorCallback: (editor: Editor, ctx: MarkdownView | MarkdownFileInfo) => {

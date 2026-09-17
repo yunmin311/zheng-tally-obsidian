@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.1
+
+- Obsidian Community Directory submission compliance
+- Normalized command ID (`zheng-tally:start` → `start`); default `Alt+Z` hotkey unchanged
+- Directory-safe manifest description
+- No changes to tally behavior, persistence, rendering, or keyboard controls
+
 ## 1.0.0
 
 - Canonical progressive `正` tally: the same 5-stroke vector at every count,
