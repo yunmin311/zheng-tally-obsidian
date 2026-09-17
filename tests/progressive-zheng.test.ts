@@ -439,19 +439,24 @@ describe('progressive-zheng: true inline chip DOM + theme', () => {
     expect(rendererSrc).toContain('data-fallback-mode');
   });
 
-  test('count <= 15 shows every group; count 18 compacts but keeps total', () => {
+  test('group slots <= 4 render fully; beyond that compact keeps current group', () => {
     const el8 = chipFor(8);
     expect(el8.querySelectorAll('[data-full="true"]').length).toBe(1);
     expect(el8.querySelector('[data-state="3"]')).not.toBeNull();
     expect(el8.querySelector('.zt-ellipsis')).toBeNull();
     expect(el8.querySelector('.zt-total')?.textContent).toBe('8');
     const el18 = chipFor(18);
-    expect(el18.querySelectorAll('[data-full="true"]').length).toBe(2);
-    expect(el18.querySelector('.zt-ellipsis')).not.toBeNull();
+    expect(el18.querySelectorAll('[data-full="true"]').length).toBe(3);
+    expect(el18.querySelector('.zt-ellipsis')).toBeNull();
     expect(el18.querySelector('[data-state="3"]')).not.toBeNull();
     expect(el18.querySelector('.zt-total')?.textContent).toBe('18');
     expect(el18.getAttribute('data-count')).toBe('18');
-    const text = el18.textContent || '';
+    const el21 = chipFor(21);
+    expect(el21.querySelectorAll('[data-full="true"]').length).toBe(3);
+    expect(el21.querySelector('.zt-ellipsis')).not.toBeNull();
+    expect(el21.querySelector('[data-state="1"]')).not.toBeNull();
+    expect(el21.querySelector('.zt-total')?.textContent).toBe('21');
+    const text = el21.textContent || '';
     expect(text).not.toContain('下');
     expect(text).not.toContain('一');
     expect(text).not.toContain('丁');

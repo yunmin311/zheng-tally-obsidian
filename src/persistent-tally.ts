@@ -20,12 +20,17 @@ export interface SuppressRange {
  * Resume lookup for Alt+Z / click. Marked tokens win (explicit ownership,
  * caret inside or directly adjacent); otherwise a single conservative legacy
  * token containing the caret may resume (lone bare 正 never qualifies — the
- * shared parser already excludes it). Ambiguity fails closed to a fresh tally.
+ * shared parser already excludes it). Ambiguity fails closed: two adjacent
+ * marked tallies sharing a caret return null instead of guessing; zero
+ * marked candidates fall back to legacy/fresh handling by the caller.
+ * Clicking a persistent widget bypasses this rule (it names its own token).
  */
 export function findResumeToken(docText: string, offset: number): ResumeToken | null {
   try {
     const marked = parseMarkedTallies(docText, 0);
-    const hit = marked.find((t) => offset >= t.from - 1 && offset <= t.to + 1);
+    const candidates = marked.filter((t) => offset >= t.from - 1 && offset <= t.to + 1);
+    if (candidates.length > 1) return null;
+    const hit = candidates[0];
     if (hit) return { from: hit.from, to: hit.to, count: hit.count, legacy: false };
     const legacy = parseStableTokens(docText, 0).filter(
       (t) => offset >= t.from && offset <= t.to,

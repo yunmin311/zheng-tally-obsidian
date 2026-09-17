@@ -122,9 +122,9 @@ describe('vector-tally: large-count behavior', () => {
     }
   });
 
-  test('count 83 compacts: 2 leading + ellipsis + partial + total 83', () => {
+  test('count 83 compacts but keeps most-recent full, partial and total 83', () => {
     const chip = buildTallyChip(83, typo(), null);
-    expect(chip.querySelectorAll('[data-full="true"]').length).toBe(2);
+    expect(chip.querySelectorAll('[data-full="true"]').length).toBe(3);
     expect(chip.querySelector('.zt-ellipsis')).not.toBeNull();
     expect(chip.querySelector('[data-state="3"]')).not.toBeNull();
     expect(chip.querySelector('.zt-total')?.textContent).toBe('83');
@@ -143,6 +143,41 @@ describe('vector-tally: large-count behavior', () => {
     const chip = buildTallyChip(-4, typo(), null);
     expect(chip.querySelectorAll('.zt-tally').length).toBe(0);
     expect(chip.querySelector('.zt-total')?.textContent).toBe('0');
+  });
+
+  test('compact sequence never drops the in-progress group', () => {
+    // [count, fulls, ellipsis?, partial state (0 = none)]
+    const cases: Array<[number, number, boolean, number]> = [
+      [14, 2, false, 4],
+      [15, 3, false, 0],
+      [16, 3, false, 1],
+      [18, 3, false, 3],
+      [19, 3, false, 4],
+      [20, 4, false, 0],
+      [21, 3, true, 1],
+      [24, 3, true, 4],
+      [25, 3, true, 0],
+      [26, 3, true, 1],
+      [79, 3, true, 4],
+      [80, 3, true, 0],
+      [81, 3, true, 1],
+    ];
+    for (const [n, fulls, ellipsis, partial] of cases) {
+      const chip = buildTallyChip(n, typo(), null);
+      expect(chip.querySelectorAll('[data-full="true"]').length).toBe(fulls);
+      expect(chip.querySelector('.zt-ellipsis') !== null).toBe(ellipsis);
+      if (partial > 0) {
+        expect(chip.querySelector(`[data-state="${partial}"]`)).not.toBeNull();
+      } else {
+        expect(chip.querySelector('.zt-tally:not([data-full])')).toBeNull();
+      }
+      expect(chip.querySelector('.zt-total')?.textContent).toBe(String(n));
+    }
+    // 19 -> 20 completes the fourth group instead of vanishing into ellipsis.
+    expect(buildTallyChip(19, typo(), null).querySelector('[data-state="4"]')).not.toBeNull();
+    const twenty = buildTallyChip(20, typo(), null);
+    expect(twenty.querySelector('.zt-ellipsis')).toBeNull();
+    expect(twenty.querySelectorAll('[data-state="5"]').length).toBe(4);
   });
 });
 

@@ -169,9 +169,10 @@ function appendGlyph(
  * True inline chip for CM6 Decoration.widget. Participates in editor layout
  * (inline-flex, no absolute/fixed, no editor-root style changes).
  *
- * count <= 15: every tally group is shown.
- * count > 15: compact preview (up to 2 leading full glyphs, ellipsis when
- * more groups exist, then the partial). The transient preview never alters
+ * Up to 4 group slots render fully (each +1 visibly adds a stroke).
+ * Beyond that the preview compacts to two leading fulls, an ellipsis, the
+ * most-recent completed full, and the current partial slot — the in-progress
+ * group is always visible. The transient preview never alters
  * the real integer count; commit format is unchanged.
  *
  * mode 'active': live tally session chip (strong chrome, total always shown).
@@ -221,13 +222,19 @@ export function buildTallyChip(
 
   const q = Math.floor(safe / 5);
   const r = safe % 5;
-  if (safe <= 15) {
+  // Group slots: every completed group of five plus the current partial one.
+  // Up to 4 slots render fully so each +1 visibly adds a stroke; beyond that
+  // the preview compacts but ALWAYS keeps the most-recent completed group
+  // and the current partial slot — the in-progress group never vanishes.
+  const groups = q + (r > 0 ? 1 : 0);
+  if (groups <= 4) {
     for (let i = 0; i < q; i++) appendGlyph(preview, 5, true, i, typo);
     if (r > 0) appendGlyph(preview, r, false, q, typo);
   } else {
-    const leading = Math.min(2, q);
-    for (let i = 0; i < leading; i++) appendGlyph(preview, 5, true, i, typo);
-    if (q > leading) preview.appendChild(buildEllipsis(typo));
+    appendGlyph(preview, 5, true, 0, typo);
+    appendGlyph(preview, 5, true, 1, typo);
+    preview.appendChild(buildEllipsis(typo));
+    appendGlyph(preview, 5, true, q - 1, typo);
     if (r > 0) appendGlyph(preview, r, false, q, typo);
   }
   chip.appendChild(preview);
