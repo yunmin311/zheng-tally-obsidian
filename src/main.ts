@@ -3,6 +3,11 @@ import { loadSettings, type Settings } from './settings';
 import { createEditorSession, type EditorSession } from './editor-session';
 import { tallyExtension } from './cm6-widget';
 import { registerTallyHover } from './tally-hover';
+import {
+  createPersistentTallyExtension,
+  findResumeToken,
+  type ResumeToken,
+} from './persistent-tally';
 
 export default class ZhengTallyPlugin extends Plugin {
   declare settings: Settings;
@@ -12,6 +17,11 @@ export default class ZhengTallyPlugin extends Plugin {
     this.settings = await loadSettings(this);
     this.registerEditorExtension(tallyExtension);
     registerTallyHover(this);
+    this.registerEditorExtension(
+      createPersistentTallyExtension((token: ResumeToken) => {
+        this.resumeTallyFromChip(token);
+      }),
+    );
 
     this.addCommand({
       id: 'zheng-tally:start',
@@ -19,7 +29,7 @@ export default class ZhengTallyPlugin extends Plugin {
       hotkeys: [{ modifiers: ['Alt'], key: 'z' }],
       editorCallback: (editor: Editor, ctx: MarkdownView | MarkdownFileInfo) => {
         if (ctx instanceof MarkdownView) {
-          this.startTallySession(editor, ctx);
+          this.startOrResumeTally(editor, ctx);
         }
       },
     });
@@ -46,7 +56,44 @@ export default class ZhengTallyPlugin extends Plugin {
     return view !== null && view.editor !== undefined;
   }
 
-  private startTallySession(editor: Editor, view: MarkdownView): void {
+  /**
+   * Alt+Z entry: resume when the caret sits on (or directly adjacent to) a
+   * plugin-owned marked tally, or uniquely inside a legacy conservative
+   * token (which upgrades to marked form on commit). Otherwise start fresh.
+   */
+  private startOrResumeTally(editor: Editor, view: MarkdownView): void {
+    if (this.activeSession) {
+      new Notice('Zheng Tally: session already active');
+      return;
+    }
+    let resume: ResumeToken | undefined;
+    try {
+      const cursor = editor.getCursor();
+      const offset = editor.posToOffset(cursor);
+      const doc = editor.getValue();
+      const hit = findResumeToken(doc, offset);
+      if (hit) resume = hit;
+    } catch {
+      resume = undefined;
+    }
+    this.startTallySession(editor, view, resume);
+  }
+
+  /** Click on a persistent chip resumes that exact count (never from zero). */
+  private resumeTallyFromChip(token: ResumeToken): void {
+    if (this.activeSession) return;
+    try {
+      const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+      if (!view || !view.editor) return;
+      const leaf = this.app.workspace.activeLeaf;
+      if (!leaf) return;
+      this.startTallySession(view.editor, view, token);
+    } catch {
+      // Resume is best-effort; never break the editor.
+    }
+  }
+
+  private startTallySession(editor: Editor, view: MarkdownView, resume?: ResumeToken): void {
     if (this.activeSession) {
       new Notice('Zheng Tally: session already active');
       return;
@@ -67,6 +114,7 @@ export default class ZhengTallyPlugin extends Plugin {
       onSessionEnd: () => {
         this.activeSession = null;
       },
+      ...(resume ? { resume } : {}),
     });
 
     if (session.start()) {

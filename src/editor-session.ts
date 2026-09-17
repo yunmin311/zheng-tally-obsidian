@@ -1,12 +1,13 @@
 import type { Editor, MarkdownView, WorkspaceLeaf, Workspace, EditorPosition } from 'obsidian';
 import { Component } from 'obsidian';
 import type { EditorView } from '@codemirror/view';
-import { createTallyState, type TallyState } from './tally-state';
+import { createTallyState, toMarkedText, type TallyState } from './tally-state';
 import {
   buildTallyChip,
   readHostTypography,
   type ZhengTypography,
 } from './renderer';
+import { dispatchPersistentSuppress, type ResumeToken } from './persistent-tally';
 import { getEditorView, resolveEditorHost } from './editor-host';
 import {
   dispatchTallyClear,
@@ -28,6 +29,8 @@ interface SessionDependencies {
   workspace: Workspace;
   settings: Settings;
   onSessionEnd: () => void;
+  /** Resume a persisted (or legacy) tally instead of starting from zero. */
+  resume?: ResumeToken;
 }
 
 function isSystemKey(e: KeyboardEvent): boolean {
@@ -67,7 +70,7 @@ function isTallyControlKey(e: KeyboardEvent): boolean {
 }
 
 export function createEditorSession(deps: SessionDependencies): EditorSession {
-  const { editor, view, leaf, workspace, settings, onSessionEnd } = deps;
+  const { editor, view, leaf, workspace, settings, onSessionEnd, resume } = deps;
   let state: TallyState | null = null;
   let cmView: EditorView | null = null;
   let hostDom: HTMLElement | null = null;
@@ -76,6 +79,8 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
   let isActive = false;
   let anchorOffset: number | null = null;
   let capturedCursor: EditorPosition | null = null;
+  let resumeRange: { from: number; to: number } | null = null;
+  let suppressActive = false;
 
   const component = new (class extends Component {
     // Do not call cleanup() here to avoid circular dependency
@@ -133,6 +138,16 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
     }
   }
 
+  function clearSuppress(): void {
+    if (!suppressActive) return;
+    suppressActive = false;
+    try {
+      if (cmView) dispatchPersistentSuppress(cmView, null);
+    } catch {
+      // Ignore teardown races.
+    }
+  }
+
   function cleanup(): void {
     if (isActive) {
       isActive = false;
@@ -150,6 +165,7 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
     } catch {
       // Ignore teardown races.
     }
+    clearSuppress();
     try {
       setChipBuilder(null);
     } catch {
@@ -161,6 +177,7 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
     baseTypo = null;
     anchorOffset = null;
     capturedCursor = null;
+    resumeRange = null;
     onSessionEnd();
   }
 
@@ -169,7 +186,6 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
       cleanup();
       return;
     }
-    const text = settings.commitFormat === 'unicode' ? state.toUnicodeText() : state.toStableText();
     const viewForAnchor = cmView;
     const mapped = viewForAnchor ? currentAnchor() : anchorOffset;
     try {
@@ -182,6 +198,22 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
     } catch {
       // Continue to single doc insertion.
     }
+    if (resumeRange && viewForAnchor) {
+      // Resume path: exactly one document transaction replaces the whole
+      // stable text + marker (or deletes both when the count reaches zero).
+      // The persistent decoration returns on suppress release below.
+      const marked = toMarkedText(state.count);
+      try {
+        const fromPos = editor.offsetToPos(resumeRange.from);
+        const toPos = editor.offsetToPos(resumeRange.to);
+        editor.replaceRange(marked, fromPos, toPos);
+      } catch {
+        // Commit failure still tears down without leaking widget/listeners.
+      }
+      cleanup();
+      return;
+    }
+    const text = settings.commitFormat === 'unicode' ? state.toUnicodeText() : toMarkedText(state.count);
     if (text) {
       try {
         let pos = capturedCursor;
@@ -259,40 +291,68 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
       hostDom = resolved.dom;
       baseTypo = resolved.typography;
       anchorOffset = resolved.offset;
+      resumeRange = null;
+      suppressActive = false;
+      if (resume) {
+        if (!Number.isSafeInteger(resume.count) || resume.count < 0) return false;
+        if (!Number.isSafeInteger(resume.from) || !Number.isSafeInteger(resume.to)) return false;
+        if (resume.from < 0 || resume.to <= resume.from) return false;
+        state = createTallyState(resume.count);
+        anchorOffset = resume.from;
+        resumeRange = { from: resume.from, to: resume.to };
+        // The persistent decoration must stand down while the active widget
+        // owns this range; without suppression fail closed (no duplicate UI).
+        if (!dispatchPersistentSuppress(cmView, resumeRange)) {
+          state = null;
+          cmView = null;
+          hostDom = null;
+          baseTypo = null;
+          anchorOffset = null;
+          resumeRange = null;
+          return false;
+        }
+        suppressActive = true;
+      }
 
       try {
         capturedCursor = editor.getCursor();
       } catch {
+        clearSuppress();
         state = null;
         cmView = null;
         hostDom = null;
         baseTypo = null;
         anchorOffset = null;
+        resumeRange = null;
         return false;
       }
       if (!capturedCursor) {
+        clearSuppress();
         state = null;
         cmView = null;
         hostDom = null;
         baseTypo = null;
         anchorOffset = null;
+        resumeRange = null;
         return false;
       }
 
       try {
         setChipBuilder((count: number) => renderChip(count));
       } catch {
+        clearSuppress();
         state = null;
         cmView = null;
         hostDom = null;
         baseTypo = null;
         anchorOffset = null;
+        resumeRange = null;
         return false;
       }
 
       let mounted = false;
       try {
-        mounted = dispatchTallySet(cmView, anchorOffset, 0);
+        mounted = dispatchTallySet(cmView, anchorOffset, state ? state.count : 0);
       } catch {
         mounted = false;
       }
@@ -302,12 +362,14 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
         } catch {
           // Ignore teardown races.
         }
+        clearSuppress();
         state = null;
         cmView = null;
         hostDom = null;
         baseTypo = null;
         anchorOffset = null;
         capturedCursor = null;
+        resumeRange = null;
         return false;
       }
 

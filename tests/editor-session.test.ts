@@ -171,9 +171,9 @@ describe('EditorSession integration (true CM6 Decoration widget)', () => {
     const beforeLen = bundle.view.state.doc.length;
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
     expect(bundle.replaceRange).toHaveBeenCalledTimes(1);
-    expect(bundle.replaceRange).toHaveBeenCalledWith('正', expect.objectContaining({ line: 0 }));
+    expect(bundle.replaceRange).toHaveBeenCalledWith('正<!--zt:5-->', expect.objectContaining({ line: 0 }));
     expect(queryWidget()).toBeNull();
-    expect(bundle.view.state.doc.length).toBe(beforeLen + '正'.length);
+    expect(bundle.view.state.doc.length).toBe(beforeLen + '正<!--zt:5-->'.length);
     session.destroy();
   });
 
