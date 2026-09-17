@@ -109,8 +109,6 @@ remainder, plus `<!--zt:count-->`. The visible text never depends on the
 plugin — with the plugin disabled, readers still see `正正正·3`. A marker is
 only honored when its count re-serializes to exactly the preceding visible
 text; mismatches fail closed (no widget, no rewrite).
-An optional Unicode tally-marks format (`commitFormat: "unicode"`) exists in
-settings, but font coverage for U+1D372–U+1D376 is unreliable, so it stays opt-in.
 
 ## Persistent resumable tally
 

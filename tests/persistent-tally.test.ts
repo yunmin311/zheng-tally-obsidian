@@ -1,5 +1,7 @@
 import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
+import * as fs from 'fs';
+import * as path from 'path';
 import { createEditorSession } from '../src/editor-session';
 import { tallyExtension } from '../src/cm6-widget';
 import {
@@ -359,6 +361,22 @@ describe('persistent-tally: resume session', () => {
     session.destroy();
   });
 
+  test('resume hides raw source: exactly one chip, no marker in visible DOM', () => {
+    makeBundle('AAA 正正正·3<!--zt:18--> BBB\n');
+    const session = startResume(4, 21, 18);
+    session.start();
+    expect(document.querySelectorAll('.zheng-tally-inline').length).toBe(1);
+    const visible = view.dom.textContent || '';
+    expect(visible).not.toContain('<!--zt:');
+    expect(visible).not.toContain('·3');
+    expect(visible).toContain('BBB');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '+' }));
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '-' }));
+    expect(document.querySelectorAll('.zheng-tally-inline').length).toBe(1);
+    expect((view.dom.textContent || '')).not.toContain('<!--zt:');
+    session.destroy();
+  });
+
   test('resume + Enter is a single document edit with marker', () => {
     makeBundle('AAA 正正正·3<!--zt:18--> BBB\n');
     const session = startResume(4, 21, 18);
@@ -381,7 +399,7 @@ describe('persistent-tally: resume session', () => {
   test('resume + Esc leaves raw Markdown byte-identical', () => {
     makeBundle('AAA 正正正·3<!--zt:18--> BBB\n');
     const before = view.state.doc.toString();
-    const session = startResume(4, 20, 18);
+    const session = startResume(4, 21, 18);
     session.start();
     window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
@@ -403,5 +421,40 @@ describe('persistent-tally: resume session', () => {
     expect(view.state.doc.toString()).toBe('x  y\n');
     expect(document.querySelector('[data-persistent]')).toBeNull();
     session.destroy();
+  });
+
+  test('external edit during resume cancels commit instead of replacing stale range', () => {
+    makeBundle('AAA 正正正·3<!--zt:18--> BBB\n');
+    const session = startResume(4, 21, 18);
+    session.start();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
+    // Foreign transaction inserts text before the token (not our commit).
+    view.dispatch({ changes: { from: 0, insert: 'NOTE ' } });
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    expect(replaceRange).not.toHaveBeenCalled();
+    // Foreign edit survives verbatim; stale token range untouched.
+    expect(view.state.doc.toString()).toBe('NOTE AAA 正正正·3<!--zt:18--> BBB\n');
+    expect(document.querySelector('.zheng-tally-inline[data-mode="active"]')).toBeNull();
+    session.destroy();
+  });
+});
+
+describe('persistent-tally: unicode retirement (V1)', () => {
+  test('historical unicode preference migrates to stable on load', async () => {
+    const { loadSettings } = await import('../src/settings');
+    const stored = { loadData: async () => ({ commitFormat: 'unicode' }) };
+    await expect(loadSettings(stored as never)).resolves.toEqual({ commitFormat: 'stable' });
+  });
+
+  test('no production commit path calls the unicode serializer', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'editor-session.ts'), 'utf8');
+    expect(src).not.toMatch(/toUnicodeText/);
+  });
+
+  test('old unicode plain text is never owned or rewritten', () => {
+    const legacy = '𣍶𣍲';
+    expect(parseMarkedTallies(legacy, 0)).toEqual([]);
+    expect(parseMarkedTallies(`tally ${legacy} done`, 0)).toEqual([]);
+    expect(findResumeToken(`tally ${legacy} done`, 8)).toBeNull();
   });
 });

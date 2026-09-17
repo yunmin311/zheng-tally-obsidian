@@ -9,6 +9,9 @@
   count down, `Enter` commits, `Esc` cancels with zero writes
 - Stable Markdown commit with marker-backed integer SOT
   (`正正正·3<!--zt:18-->` for 18); visible text stays readable without the plugin
+- V1 persistence uses the marker-backed stable format as the canonical storage
+  representation (the experimental Unicode commit option is retired; a stored
+  `unicode` preference migrates safely to stable, old Unicode text untouched)
 - Persistent resumable tally objects: vector chips survive note reopens,
   plugin reloads, and Obsidian restarts; click or caret + `Alt+Z` resumes
 - Compact large-count preview that never drops the in-progress group
