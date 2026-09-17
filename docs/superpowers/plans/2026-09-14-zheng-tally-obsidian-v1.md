@@ -126,7 +126,7 @@ const DEFAULT_SETTINGS: Settings = { commitFormat: 'stable' };
 
 ## Phase 5: Main Plugin (`main.ts`)
 
-- Register command `zheng-tally:start` with default hotkey `Alt+Z`
+- Register command `start` (bare ID; Obsidian prefixes the plugin ID automatically) with default hotkey `Alt+Z`
 - Command callback: check active editor, create `EditorSession` if none active
 - Register `onunload` to destroy active session
 - Load settings
