@@ -200,7 +200,7 @@ Strokes use `fill="currentColor"`, so light/dark themes recolor for free.
 npm install       # install dependencies
 npm run dev       # watch mode build
 npm run build     # production build (dist/main.js + dist/manifest.json)
-npm test          # run tests (138 passing)
+npm test          # run tests (143 passing)
 npm run lint      # eslint
 npm run typecheck # tsc --noEmit
 ```
@@ -215,7 +215,7 @@ npm run typecheck # tsc --noEmit
 - `src/tally-hover.ts` — legacy-token parser + transient count badge
 - `src/persistent-tally.ts` — marked-token replace decorations, resume lookup
 - `src/tally-state.ts` — pure integer state, stable/marked serialization
-- `src/settings.ts` — commit format preference
+- `src/settings.ts` — legacy settings compatibility / migration
 - `src/main.ts` — plugin entry, command registration
 - `vendor/` — Arphic Public License + attribution notes
 
