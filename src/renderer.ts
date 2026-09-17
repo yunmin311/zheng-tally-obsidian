@@ -173,25 +173,36 @@ function appendGlyph(
  * count > 15: compact preview (up to 2 leading full glyphs, ellipsis when
  * more groups exist, then the partial). The transient preview never alters
  * the real integer count; commit format is unchanged.
+ *
+ * mode 'active': live tally session chip (strong chrome, total always shown).
+ * mode 'persisted': committed-tally chip reusing the same glyph pipeline and
+ * box metrics; chrome is quieter and the total is hidden by default via
+ * visibility (space reserved, so revealing it never shifts layout).
  */
+export type TallyChipMode = 'active' | 'persisted';
+
 export function buildTallyChip(
   count: number,
   typo: ZhengTypography,
   onClick: (() => void) | null,
+  mode: TallyChipMode = 'active',
+  showTotal = true,
 ): HTMLElement {
   const safe = Math.max(0, Math.floor(count));
+  const persisted = mode === 'persisted';
   const chip = document.createElement('span');
   chip.className = 'zheng-tally-inline';
   chip.setAttribute('data-inline-widget', 'true');
   chip.setAttribute('data-count', String(safe));
+  chip.setAttribute('data-mode', mode);
   chip.style.cssText = `
     display: inline-flex;
     align-items: center;
     gap: 0.35em;
     padding: 0.1em 0.35em;
     margin: 0 0.15em;
-    background: var(--background-secondary);
-    border: 1px solid var(--background-modifier-border);
+    background: ${persisted ? 'transparent' : 'var(--background-secondary)'};
+    border: 1px ${persisted ? 'dashed' : 'solid'} var(--background-modifier-border);
     border-radius: 4px;
     white-space: nowrap;
     vertical-align: text-bottom;
@@ -220,7 +231,9 @@ export function buildTallyChip(
     if (r > 0) appendGlyph(preview, r, false, q, typo);
   }
   chip.appendChild(preview);
-  chip.appendChild(buildTotalCount(safe, typo));
+  const totalEl = buildTotalCount(safe, typo);
+  if (persisted && !showTotal) totalEl.style.visibility = 'hidden';
+  chip.appendChild(totalEl);
   if (onClick) {
     chip.addEventListener('click', () => {
       onClick();

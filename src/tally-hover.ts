@@ -1,6 +1,7 @@
 import { StateEffect, StateField } from '@codemirror/state';
 import { Decoration, ViewPlugin, WidgetType, type EditorView } from '@codemirror/view';
 import type { Plugin } from 'obsidian';
+import { parseMarkedTallies } from './tally-state';
 
 export interface StableToken {
   from: number;
@@ -110,6 +111,25 @@ export class CountBadge extends WidgetType {
   }
 }
 
+/**
+ * Conservative stable tokens minus plugin-owned marked ranges. A marked
+ * tally (`正正正·3<!--zt:18-->`) is rendered solely by the persistent
+ * decoration; the hover badge must never produce a second badge for it.
+ * Legacy unmarked tallies keep the heuristic badge.
+ */
+export function stableTokensWithoutMarked(text: string, baseOffset: number): StableToken[] {
+  let marked: Array<{ from: number; to: number }> = [];
+  try {
+    marked = parseMarkedTallies(text, baseOffset);
+  } catch {
+    marked = [];
+  }
+  if (marked.length === 0) return parseStableTokens(text, baseOffset);
+  return parseStableTokens(text, baseOffset).filter(
+    (s) => !marked.some((m) => s.from < m.to && m.from < s.to),
+  );
+}
+
 export const setHoverEffect = StateEffect.define<number>();
 export const clearHoverEffect = StateEffect.define<void>();
 
@@ -152,7 +172,7 @@ function findActiveToken(view: EditorView, hover: number | null): StableToken | 
       } catch {
         continue;
       }
-      for (const token of parseStableTokens(text, from)) {
+      for (const token of stableTokensWithoutMarked(text, from)) {
         const hovered = hover !== null && hover >= token.from && hover <= token.to;
         const caret = sel >= token.from && sel <= token.to;
         if (hovered || caret) return token;
