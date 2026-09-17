@@ -1,9 +1,9 @@
 {
   "id": "zheng-tally",
   "name": "Zheng Tally",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "minAppVersion": "1.5.12",
-  "description": "Chinese 正字 tally counting in Markdown editor",
+  "description": "Count with traditional five-stroke Zheng tallies inline in Obsidian and resume them later.",
   "author": "yunmin311",
   "authorUrl": "https://github.com/yunmin311",
   "isDesktopOnly": true
