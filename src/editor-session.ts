@@ -1,12 +1,20 @@
 import type { Editor, MarkdownView, WorkspaceLeaf, Workspace, EditorPosition } from 'obsidian';
 import { Component } from 'obsidian';
-import { createTallyState, type TallyState } from './tally-state';
+import type { EditorView } from '@codemirror/view';
+import { createTallyState, toMarkedText, type TallyState } from './tally-state';
 import {
-  createFallbackOverlayRenderer,
-  createInlineTallyRenderer,
-  type InlineTallyRenderer,
+  buildTallyChip,
+  readHostTypography,
+  type ZhengTypography,
 } from './renderer';
-import { resolveEditorHost, type ResolvedEditorHost } from './editor-host';
+import { dispatchPersistentSuppress, type ResumeToken } from './persistent-tally';
+import { getEditorView, resolveEditorHost } from './editor-host';
+import {
+  dispatchTallyClear,
+  dispatchTallySet,
+  readTallyAnchor,
+  setChipBuilder,
+} from './cm6-widget';
 import type { Settings } from './settings';
 
 export interface EditorSession {
@@ -21,6 +29,8 @@ interface SessionDependencies {
   workspace: Workspace;
   settings: Settings;
   onSessionEnd: () => void;
+  /** Resume a persisted (or legacy) tally instead of starting from zero. */
+  resume?: ResumeToken;
 }
 
 function isSystemKey(e: KeyboardEvent): boolean {
@@ -60,20 +70,87 @@ function isTallyControlKey(e: KeyboardEvent): boolean {
 }
 
 export function createEditorSession(deps: SessionDependencies): EditorSession {
-  const { editor, view, leaf, workspace, settings, onSessionEnd } = deps;
+  // Note: `deps.settings` is intentionally not consumed here. V1 commits the
+  // canonical marker-backed format unconditionally; historical stored
+  // preferences migrate in settings.loadSettings.
+  const { editor, view, leaf, workspace, onSessionEnd, resume } = deps;
   let state: TallyState | null = null;
-  let renderer: InlineTallyRenderer | null = null;
-  let rendererHost: HTMLElement | null = null;
+  let cmView: EditorView | null = null;
+  let hostDom: HTMLElement | null = null;
+  let baseTypo: ZhengTypography | null = null;
   let keydownHandler: ((e: KeyboardEvent) => void) | null = null;
   let isActive = false;
+  let anchorOffset: number | null = null;
   let capturedCursor: EditorPosition | null = null;
-  let host: ResolvedEditorHost | null = null;
+  let resumeRange: { from: number; to: number } | null = null;
+  let resumeDocSnapshot: string | null = null;
+  let suppressActive = false;
 
   const component = new (class extends Component {
     // Do not call cleanup() here to avoid circular dependency
     // cleanup() will call component.unload() to clean up registered events
   })();
   component.load();
+
+  function currentTypo(): ZhengTypography | null {
+    try {
+      if (hostDom) {
+        const fresh = readHostTypography(hostDom);
+        if (fresh && fresh.fontFamily && fresh.fontSize && fresh.color) return fresh;
+      }
+    } catch {
+      // Fall through to base.
+    }
+    return baseTypo;
+  }
+
+  function renderChip(count: number): HTMLElement {
+    const typo =
+      currentTypo() ??
+      baseTypo ??
+      ({ fontFamily: 'serif', fontSize: '16px', fontWeight: '400', fontStyle: 'normal', color: 'rgb(0,0,0)', devicePixelRatio: 1 } as ZhengTypography);
+    return buildTallyChip(count, typo, () => {
+      if (state && isActive && cmView && anchorOffset !== null) {
+        state.increment();
+        refreshWidget();
+      }
+    });
+  }
+
+  function currentAnchor(): number | null {
+    try {
+      if (cmView) {
+        const mapped = readTallyAnchor(cmView);
+        if (mapped !== null && Number.isFinite(mapped) && mapped >= 0) {
+          anchorOffset = mapped;
+          return mapped;
+        }
+      }
+    } catch {
+      // Fall through to captured anchor.
+    }
+    return anchorOffset;
+  }
+
+  function refreshWidget(): void {
+    if (!state || !cmView || anchorOffset === null) return;
+    const anchor = currentAnchor() ?? anchorOffset;
+    try {
+      dispatchTallySet(cmView, anchor, state.count);
+    } catch {
+      // Render failure never breaks counting session.
+    }
+  }
+
+  function clearSuppress(): void {
+    if (!suppressActive) return;
+    suppressActive = false;
+    try {
+      if (cmView) dispatchPersistentSuppress(cmView, null);
+    } catch {
+      // Ignore teardown races.
+    }
+  }
 
   function cleanup(): void {
     if (isActive) {
@@ -87,18 +164,25 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
 
     component.unload();
 
-    if (renderer) {
-      try {
-        renderer.destroy();
-      } catch {
-        // Ignore teardown races.
-      }
-      renderer = null;
+    try {
+      if (cmView) dispatchTallyClear(cmView);
+    } catch {
+      // Ignore teardown races.
     }
-    rendererHost = null;
+    clearSuppress();
+    try {
+      setChipBuilder(null);
+    } catch {
+      // Ignore teardown races.
+    }
     state = null;
+    cmView = null;
+    hostDom = null;
+    baseTypo = null;
+    anchorOffset = null;
     capturedCursor = null;
-    host = null;
+    resumeRange = null;
+    resumeDocSnapshot = null;
     onSessionEnd();
   }
 
@@ -107,10 +191,60 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
       cleanup();
       return;
     }
-    const text = settings.commitFormat === 'unicode' ? state.toUnicodeText() : state.toStableText();
+    const viewForAnchor = cmView;
+    const mapped = viewForAnchor ? currentAnchor() : anchorOffset;
+    try {
+      if (viewForAnchor) dispatchTallyClear(viewForAnchor);
+    } catch {
+      // Continue to single doc insertion.
+    }
+    try {
+      setChipBuilder(null);
+    } catch {
+      // Continue to single doc insertion.
+    }
+    if (resumeRange && viewForAnchor) {
+      // Resume path: exactly one document transaction replaces the whole
+      // stable text + marker (or deletes both when the count reaches zero).
+      // The persistent decoration returns on suppress release below.
+      // Safety gate: any external document change since resume start cancels
+      // the session instead of blindly replacing stale offsets. The marked
+      // tally then re-parses from the current document; nothing is rewritten.
+      try {
+        if (resumeDocSnapshot !== null && viewForAnchor.state.doc.toString() !== resumeDocSnapshot) {
+          cleanup();
+          return;
+        }
+      } catch {
+        cleanup();
+        return;
+      }
+      const marked = toMarkedText(state.count);
+      try {
+        const fromPos = editor.offsetToPos(resumeRange.from);
+        const toPos = editor.offsetToPos(resumeRange.to);
+        editor.replaceRange(marked, fromPos, toPos);
+      } catch {
+        // Commit failure still tears down without leaking widget/listeners.
+      }
+      cleanup();
+      return;
+    }
+        // V1 canonical storage: every production Enter commit is marker-backed
+        // stable format. The experimental Unicode commit option is retired; the
+        // Unicode serializer on TallyState remains for tests/future use only.
+    const text = toMarkedText(state.count);
     if (text) {
       try {
-        editor.replaceRange(text, capturedCursor);
+        let pos = capturedCursor;
+        if (mapped !== null && mapped !== undefined) {
+          try {
+            pos = editor.offsetToPos(mapped);
+          } catch {
+            pos = capturedCursor;
+          }
+        }
+        editor.replaceRange(text, pos);
       } catch {
         // Commit failure still tears down without leaking widget/listeners.
       }
@@ -131,18 +265,10 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
 
       if (e.key === ' ' || e.key === 'Spacebar' || isPlusKey(e)) {
         state.increment();
-        try {
-          renderer?.update(state.count);
-        } catch {
-          // Render failure never breaks counting session.
-        }
+        refreshWidget();
       } else if (e.key === 'Backspace' || isMinusKey(e)) {
         state.decrement();
-        try {
-          renderer?.update(state.count);
-        } catch {
-          // Render failure never breaks counting session.
-        }
+        refreshWidget();
       } else if (e.key === 'Enter') {
         commitAndClose();
       } else if (e.key === 'Escape') {
@@ -177,76 +303,95 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
 
       const resolved = resolveEditorHost(editor);
       if (!resolved) return false;
-      host = resolved;
+      const resolvedView = getEditorView(editor);
+      if (!resolvedView) return false;
 
       state = createTallyState(0);
-
-      let inline: InlineTallyRenderer | null = null;
-      try {
-        inline = createInlineTallyRenderer(host);
-      } catch {
-        inline = null;
-      }
-      if (!inline) {
-        state = null;
-        host = null;
-        return false;
-      }
-
-      try {
-        host.dom.appendChild(inline.element);
-      } catch {
-        try {
-          inline.destroy();
-        } catch {
-          // Ignore teardown races.
-        }
-        let fallback: InlineTallyRenderer | null = null;
-        try {
-          fallback = createFallbackOverlayRenderer(host.typography);
-          document.body.appendChild(fallback.element);
-        } catch {
-          fallback = null;
-        }
-        if (!fallback) {
+      cmView = resolvedView;
+      hostDom = resolved.dom;
+      baseTypo = resolved.typography;
+      anchorOffset = resolved.offset;
+      resumeRange = null;
+      suppressActive = false;
+      if (resume) {
+        if (!Number.isSafeInteger(resume.count) || resume.count < 0) return false;
+        if (!Number.isSafeInteger(resume.from) || !Number.isSafeInteger(resume.to)) return false;
+        if (resume.from < 0 || resume.to <= resume.from) return false;
+        state = createTallyState(resume.count);
+        anchorOffset = resume.from;
+        resumeRange = { from: resume.from, to: resume.to };
+        // The persistent decoration must stand down while the active widget
+        // owns this range; without suppression fail closed (no duplicate UI).
+        if (!dispatchPersistentSuppress(cmView, resumeRange)) {
           state = null;
-          host = null;
+          cmView = null;
+          hostDom = null;
+          baseTypo = null;
+          anchorOffset = null;
+          resumeRange = null;
           return false;
         }
-        inline = fallback;
-        rendererHost = document.body;
-      }
-      if (!rendererHost) rendererHost = host.dom;
-      renderer = inline;
-
-      try {
-        renderer.update(0);
-      } catch {
-        cleanup();
-        return false;
+        suppressActive = true;
       }
 
       try {
         capturedCursor = editor.getCursor();
       } catch {
-        cleanup();
+        clearSuppress();
+        state = null;
+        cmView = null;
+        hostDom = null;
+        baseTypo = null;
+        anchorOffset = null;
+        resumeRange = null;
         return false;
       }
       if (!capturedCursor) {
-        cleanup();
+        clearSuppress();
+        state = null;
+        cmView = null;
+        hostDom = null;
+        baseTypo = null;
+        anchorOffset = null;
+        resumeRange = null;
         return false;
       }
 
-      renderer.onClick(() => {
-        if (state) {
-          state.increment();
-          try {
-            renderer?.update(state.count);
-          } catch {
-            // Ignore render failures on click.
-          }
+      try {
+        setChipBuilder((count: number) => renderChip(count));
+      } catch {
+        clearSuppress();
+        state = null;
+        cmView = null;
+        hostDom = null;
+        baseTypo = null;
+        anchorOffset = null;
+        resumeRange = null;
+        return false;
+      }
+
+      let mounted = false;
+      try {
+        mounted = dispatchTallySet(cmView, anchorOffset, state ? state.count : 0);
+      } catch {
+        mounted = false;
+      }
+      if (!mounted) {
+        try {
+          setChipBuilder(null);
+        } catch {
+          // Ignore teardown races.
         }
-      });
+        clearSuppress();
+        state = null;
+        cmView = null;
+        hostDom = null;
+        baseTypo = null;
+        anchorOffset = null;
+        capturedCursor = null;
+        resumeRange = null;
+        return false;
+      }
 
       try {
         keydownHandler = handleKeydown;
@@ -257,6 +402,17 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
       } catch {
         cleanup();
         return false;
+      }
+
+      if (resumeRange && cmView) {
+        // Snapshot after setup (setup performs zero document writes): any
+        // later external change cancels resume commit instead of replacing
+        // stale offsets.
+        try {
+          resumeDocSnapshot = cmView.state.doc.toString();
+        } catch {
+          resumeDocSnapshot = null;
+        }
       }
 
       isActive = true;

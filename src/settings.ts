@@ -13,6 +13,11 @@ export const DEFAULT_SETTINGS: Settings = {
 export async function loadSettings(plugin: Plugin): Promise<Settings> {
   const data = (await plugin.loadData()) as Partial<Settings> | null;
   if (!data) return DEFAULT_SETTINGS;
+  // V1 retired the experimental Unicode commit option: a historical stored
+  // 'unicode' preference migrates safely to stable so production Enter can
+  // never emit a non-persistent tally. Old Unicode plain text in notes is
+  // left untouched (never auto-rewritten).
+  if (data.commitFormat === 'unicode') return { commitFormat: 'stable' };
   return {
     commitFormat: data.commitFormat ?? DEFAULT_SETTINGS.commitFormat,
   };

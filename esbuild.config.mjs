@@ -19,7 +19,7 @@ async function buildPlugin() {
       platform: 'node',
       target: 'es2022',
       format: 'cjs',
-      external: ['obsidian'],
+      external: ['obsidian', 'electron', '@codemirror/state', '@codemirror/view'],
       sourcemap: true,
       minify: isProduction,
     });
@@ -34,7 +34,7 @@ async function buildPlugin() {
       platform: 'node',
       target: 'es2022',
       format: 'cjs',
-      external: ['obsidian'],
+      external: ['obsidian', 'electron', '@codemirror/state', '@codemirror/view'],
       sourcemap: true,
       minify: isProduction,
     });

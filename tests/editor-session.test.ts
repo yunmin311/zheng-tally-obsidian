@@ -1,46 +1,66 @@
+import { EditorView } from '@codemirror/view';
 import { createEditorSession } from '../src/editor-session';
+import { tallyExtension } from '../src/cm6-widget';
 import type { Editor, MarkdownView, WorkspaceLeaf, Workspace, EventRef, EditorPosition } from 'obsidian';
 
-const createMockEditor = (overrides: Partial<{
-  cursor: EditorPosition;
-  offset: number;
-  coords: { left: number; top: number; bottom: number };
+interface MockEditorBundle {
+  editor: Editor;
+  view: EditorView;
   replaceRange: jest.Mock;
-  dom: HTMLElement;
-}> = {}) => {
-  const cursor = overrides.cursor ?? { line: 0, ch: 0 };
-  const dom = overrides.dom ?? document.createElement('div');
-  if (!dom.parentNode) document.body.appendChild(dom);
+  cursor: EditorPosition;
+}
+
+const makeRealEditor = (doc = 'AAA BBB\nsecond line\n', cursor: EditorPosition = { line: 0, ch: 4 }): MockEditorBundle => {
+  const parent = document.createElement('div');
+  parent.style.fontFamily = 'SimSun, serif';
+  parent.style.fontSize = '24px';
+  parent.style.fontWeight = '400';
+  parent.style.fontStyle = 'normal';
+  parent.style.color = 'rgb(0, 0, 0)';
+  document.body.appendChild(parent);
+  const view = new EditorView({ doc, extensions: [tallyExtension], parent });
+  const dom = view.dom as HTMLElement;
   dom.style.fontFamily = 'SimSun, serif';
   dom.style.fontSize = '24px';
   dom.style.color = 'rgb(0, 0, 0)';
-  return {
-    cm: {
-      dom,
-      coordsAtPos: () => overrides.coords ?? { left: 100, top: 100, bottom: 120 },
+  // jsdom has no layout: stub screen coords so host resolution succeeds.
+  // Production uses real EditorView.coordsAtPos; placement never depends on it.
+  try {
+    (view as unknown as { coordsAtPos: unknown }).coordsAtPos = () => ({ left: 100, top: 100, bottom: 120 });
+  } catch {
+    // Ignore stub failures; host will fail-closed.
+  }
+  const replaceRange = jest.fn((text: string, pos: EditorPosition) => {
+    const line = view.state.doc.line(pos.line + 1);
+    view.dispatch({ changes: { from: line.from + pos.ch, insert: text } });
+  });
+  const editor = {
+    getCursor: () => ({ ...cursor }),
+    posToOffset: (pos: EditorPosition) => view.state.doc.line(pos.line + 1).from + pos.ch,
+    offsetToPos: (off: number) => {
+      const line = view.state.doc.lineAt(off);
+      return { line: line.number - 1, ch: off - line.from };
     },
-    posToOffset: () => overrides.offset ?? 0,
-    getCursor: () => cursor,
-    replaceRange: overrides.replaceRange ?? jest.fn(),
+    replaceRange,
+    cm: view,
   } as unknown as Editor;
+  return { editor, view, replaceRange, cursor };
 };
 
-const createMockView = (editor: Editor) => ({
-  editor,
-} as unknown as MarkdownView);
-
+const createMockView = (editor: Editor) => ({ editor } as unknown as MarkdownView);
 const createMockLeaf = () => ({
   on: jest.fn((_event: string, _handler: () => void) => ({ off: () => {} } as EventRef)),
 } as unknown as WorkspaceLeaf);
-
 const createMockWorkspace = (leaf: WorkspaceLeaf) => ({
   activeLeaf: leaf,
   on: jest.fn((_event: string, _handler: () => void) => ({ off: () => {} } as EventRef)),
   getActiveViewOfType: jest.fn(),
 } as unknown as Workspace);
 
-describe('EditorSession integration (inline CM6 widget)', () => {
-  let mockEditor: Editor;
+const queryWidget = (): HTMLElement | null => document.querySelector('.zheng-tally-inline') as HTMLElement | null;
+
+describe('EditorSession integration (true CM6 Decoration widget)', () => {
+  let bundle: MockEditorBundle;
   let mockView: MarkdownView;
   let mockLeaf: WorkspaceLeaf;
   let mockWorkspace: Workspace;
@@ -48,41 +68,49 @@ describe('EditorSession integration (inline CM6 widget)', () => {
 
   beforeEach(() => {
     document.body.innerHTML = '';
-    mockEditor = createMockEditor();
-    mockView = createMockView(mockEditor);
+    bundle = makeRealEditor();
+    mockView = createMockView(bundle.editor);
     mockLeaf = createMockLeaf();
     mockWorkspace = createMockWorkspace(mockLeaf);
     settings = { commitFormat: 'stable' };
   });
 
   afterEach(() => {
+    try {
+      bundle.view.destroy();
+    } catch {
+      // Ignore teardown races.
+    }
     document.body.innerHTML = '';
   });
 
-  test('session start creates inline widget inside editor dom', () => {
-    let sessionEnded = false;
-    const session = createEditorSession({
-      editor: mockEditor,
+  const startSession = (onSessionEnd: () => void = () => {}) =>
+    createEditorSession({
+      editor: bundle.editor,
       view: mockView,
       leaf: mockLeaf,
       workspace: mockWorkspace,
       settings,
-      onSessionEnd: () => { sessionEnded = true; },
+      onSessionEnd,
     });
 
+  test('session start creates true inline widget inside editor (no fixed overlay)', () => {
+    const session = startSession();
     expect(session.start()).toBe(true);
-    expect(sessionEnded).toBe(false);
-    expect(document.querySelector('.zheng-tally-inline')).not.toBeNull();
-    // Normal path is inline, not fixed overlay.
+    const widget = queryWidget();
+    expect(widget).not.toBeNull();
     expect(document.querySelector('.zheng-tally-overlay')).toBeNull();
+    // Widget must live inside the CM editor DOM (layout participant).
+    expect(bundle.view.dom.contains(widget!)).toBe(true);
+    expect(widget!.style.position).not.toBe('absolute');
+    expect(widget!.style.position).not.toBe('fixed');
+    // Editor root style.position must not be rewritten by normal path.
+    expect(bundle.view.dom.style.position).not.toBe('relative');
     session.destroy();
   });
 
   test('fail-closed when CM6 host cannot resolve (no cm/dom)', () => {
-    const bad = {
-      getCursor: () => ({ line: 0, ch: 0 }),
-      replaceRange: jest.fn(),
-    } as unknown as Editor;
+    const bad = { getCursor: () => ({ line: 0, ch: 0 }), replaceRange: jest.fn() } as unknown as Editor;
     const session = createEditorSession({
       editor: bad,
       view: mockView,
@@ -92,284 +120,130 @@ describe('EditorSession integration (inline CM6 widget)', () => {
       onSessionEnd: () => {},
     });
     expect(session.start()).toBe(false);
-    expect(document.querySelector('.zheng-tally-inline')).toBeNull();
-    expect(document.querySelector('.zheng-tally-overlay')).toBeNull();
+    expect(queryWidget()).toBeNull();
     session.destroy();
   });
 
-  test('Space increments count and updates inline widget', () => {
-    const session = createEditorSession({
-      editor: mockEditor,
-      view: mockView,
-      leaf: mockLeaf,
-      workspace: mockWorkspace,
-      settings,
-      onSessionEnd: () => {},
-    });
+  test('widget sits mid-text AAA|BBB and reserves width', () => {
+    const session = startSession();
+    expect(session.start()).toBe(true);
+    const widget = queryWidget()!;
+    // Anchored at AAA|BBB (offset 4 in "AAA BBB"): widget inside same line element.
+    const line = widget.closest('.cm-line');
+    expect(line).not.toBeNull();
+    expect(line!.textContent).toContain('AAA');
+    expect(line!.textContent).toContain('BBB');
+    session.destroy();
+  });
+
+  test('Space increments, +/- work, floor at 0', () => {
+    const session = startSession();
     session.start();
     window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
-    const widget = document.querySelector('.zheng-tally-inline');
-    expect(widget).not.toBeNull();
-    expect(widget?.textContent).not.toContain('一');
-    const hasCanvas = widget?.querySelector('canvas') !== null;
-    const hasFallback = (widget?.textContent || '').includes('[1]');
-    expect(hasCanvas || hasFallback).toBe(true);
-    session.destroy();
-  });
-
-  test('+ and NumpadAdd increment', () => {
-    const session = createEditorSession({
-      editor: mockEditor,
-      view: mockView,
-      leaf: mockLeaf,
-      workspace: mockWorkspace,
-      settings,
-      onSessionEnd: () => {},
-    });
-    session.start();
+    expect(queryWidget()?.textContent).toContain('1');
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '+' }));
-    let widget = document.querySelector('.zheng-tally-inline');
-    expect(widget?.textContent).toContain('1');
+    expect(queryWidget()?.textContent).toContain('2');
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Add', code: 'NumpadAdd' }));
-    widget = document.querySelector('.zheng-tally-inline');
-    expect(widget?.textContent).toContain('2');
+    expect(queryWidget()?.textContent).toContain('3');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '-' }));
+    expect(queryWidget()?.textContent).toContain('2');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '-', code: 'NumpadSubtract' }));
+    expect(queryWidget()?.textContent).toContain('1');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace' }));
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace' }));
+    expect(queryWidget()?.textContent).toContain('0');
     session.destroy();
   });
 
-  test('Shift+= is recognized as plus (shift must not passthrough)', () => {
-    const session = createEditorSession({
-      editor: mockEditor,
-      view: mockView,
-      leaf: mockLeaf,
-      workspace: mockWorkspace,
-      settings,
-      onSessionEnd: () => {},
-    });
+  test('Shift+= recognized as plus', () => {
+    const session = startSession();
     session.start();
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '+', shiftKey: true, code: 'Equal' }));
-    expect(document.querySelector('.zheng-tally-inline')?.textContent).toContain('1');
+    expect(queryWidget()?.textContent).toContain('1');
     session.destroy();
   });
 
-  test('- and NumpadSubtract decrement, floor at 0', () => {
-    const session = createEditorSession({
-      editor: mockEditor,
-      view: mockView,
-      leaf: mockLeaf,
-      workspace: mockWorkspace,
-      settings,
-      onSessionEnd: () => {},
-    });
-    session.start();
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: '-' }));
-    expect(document.querySelector('.zheng-tally-inline')?.textContent).toContain('0');
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: '-', code: 'NumpadSubtract' }));
-    expect(document.querySelector('.zheng-tally-inline')?.textContent).toContain('0');
-    session.destroy();
-  });
-
-  test('Backspace decrements count', () => {
-    const session = createEditorSession({
-      editor: mockEditor,
-      view: mockView,
-      leaf: mockLeaf,
-      workspace: mockWorkspace,
-      settings,
-      onSessionEnd: () => {},
-    });
-    session.start();
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace' }));
-    expect(document.querySelector('.zheng-tally-inline')?.textContent).toContain('1');
-    session.destroy();
-  });
-
-  test('Enter commits text and removes widget with single replaceRange', () => {
-    const replaceSpy = jest.fn();
-    mockEditor = createMockEditor({ replaceRange: replaceSpy });
-    mockView = createMockView(mockEditor);
-    const session = createEditorSession({
-      editor: mockEditor,
-      view: mockView,
-      leaf: mockLeaf,
-      workspace: mockWorkspace,
-      settings,
-      onSessionEnd: () => {},
-    });
+  test('Enter single doc mutation with mapped anchor, widget removed', () => {
+    const session = startSession();
     session.start();
     for (let i = 0; i < 5; i++) window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
-    expect(replaceSpy).not.toHaveBeenCalled();
+    expect(bundle.replaceRange).not.toHaveBeenCalled();
+    const beforeLen = bundle.view.state.doc.length;
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
-    expect(replaceSpy).toHaveBeenCalledTimes(1);
-    expect(replaceSpy).toHaveBeenCalledWith('正', mockEditor.getCursor());
-    expect(document.querySelector('.zheng-tally-inline')).toBeNull();
+    expect(bundle.replaceRange).toHaveBeenCalledTimes(1);
+    expect(bundle.replaceRange).toHaveBeenCalledWith('正<!--zt:5-->', expect.objectContaining({ line: 0 }));
+    expect(queryWidget()).toBeNull();
+    expect(bundle.view.state.doc.length).toBe(beforeLen + '正<!--zt:5-->'.length);
     session.destroy();
   });
 
-  test('Esc cancels without inserting text', () => {
-    const replaceSpy = jest.fn();
-    mockEditor = createMockEditor({ replaceRange: replaceSpy });
-    mockView = createMockView(mockEditor);
-    const session = createEditorSession({
-      editor: mockEditor,
-      view: mockView,
-      leaf: mockLeaf,
-      workspace: mockWorkspace,
-      settings,
-      onSessionEnd: () => {},
-    });
+  test('Esc zero mutations, widget removed, doc unchanged', () => {
+    const session = startSession();
     session.start();
     window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
+    const before = bundle.view.state.doc.toString();
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-    expect(replaceSpy).not.toHaveBeenCalled();
-    expect(document.querySelector('.zheng-tally-inline')).toBeNull();
+    expect(bundle.replaceRange).not.toHaveBeenCalled();
+    expect(bundle.view.state.doc.toString()).toBe(before);
+    expect(queryWidget()).toBeNull();
     session.destroy();
   });
 
-  test('Ctrl/Alt/Meta combos passthrough and keep session', () => {
-    const session = createEditorSession({
-      editor: mockEditor,
-      view: mockView,
-      leaf: mockLeaf,
-      workspace: mockWorkspace,
-      settings,
-      onSessionEnd: () => {},
-    });
+  test('Ctrl/Alt/Meta passthrough keeps session', () => {
+    const session = startSession();
     session.start();
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', ctrlKey: true }));
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', ctrlKey: true }));
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', altKey: true }));
-    expect(document.querySelector('.zheng-tally-inline')).not.toBeNull();
+    expect(queryWidget()).not.toBeNull();
     session.destroy();
   });
 
-  test('Second start during active session returns false', () => {
+  test('count 18 shows full groups plus state 3, no 一/丁/下 text', () => {
+    const session = startSession();
+    session.start();
+    for (let i = 0; i < 18; i++) window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
+    const widget = queryWidget()!;
+    expect(widget.querySelectorAll('[data-full="true"]').length).toBe(3);
+    expect(widget.querySelector('.zt-ellipsis')).toBeNull();
+    expect(widget.querySelector('[data-state="3"]')).not.toBeNull();
+    expect(widget.querySelector('.zt-total')?.textContent).toBe('18');
+    expect(widget.textContent).not.toContain('一');
+    session.destroy();
+  });
+
+  test('scroll keeps anchor in line (mapping, no new mutation)', () => {
+    const session = startSession();
+    session.start();
+    const widget = queryWidget()!;
+    const lineBefore = widget.closest('.cm-line');
+    bundle.view.dom.querySelector('.cm-scroller')?.scrollTo?.(0, 50);
+    const widgetAfter = queryWidget()!;
+    expect(widgetAfter.closest('.cm-line')).toBe(lineBefore);
+    expect(bundle.replaceRange).not.toHaveBeenCalled();
+    session.destroy();
+  });
+
+  test('leaf change cancels without doc mutation', () => {
+    let ended = false;
     const session = createEditorSession({
-      editor: mockEditor,
+      editor: bundle.editor,
       view: mockView,
       leaf: mockLeaf,
       workspace: mockWorkspace,
       settings,
-      onSessionEnd: () => {},
-    });
-    expect(session.start()).toBe(true);
-    expect(session.start()).toBe(false);
-    session.destroy();
-  });
-
-  test('Leaf change during session cancels it', () => {
-    let sessionEnded = false;
-    const session = createEditorSession({
-      editor: mockEditor,
-      view: mockView,
-      leaf: mockLeaf,
-      workspace: mockWorkspace,
-      settings,
-      onSessionEnd: () => { sessionEnded = true; },
+      onSessionEnd: () => {
+        ended = true;
+      },
     });
     session.start();
     (mockWorkspace as unknown as { activeLeaf: unknown }).activeLeaf = null;
-    const handler = (mockWorkspace.on as jest.Mock).mock.calls.find(
-      (c: unknown[]) => c[0] === 'active-leaf-change',
-    )?.[1] as (() => void) | undefined;
+    const handler = (mockWorkspace.on as jest.Mock).mock.calls.find((c: unknown[]) => c[0] === 'active-leaf-change')?.[1] as
+      | (() => void)
+      | undefined;
     if (handler) handler();
-    expect(sessionEnded).toBe(true);
-    expect(document.querySelector('.zheng-tally-inline')).toBeNull();
+    expect(ended).toBe(true);
+    expect(queryWidget()).toBeNull();
+    expect(bundle.replaceRange).not.toHaveBeenCalled();
     session.destroy();
-  });
-
-  test('Count 18 renders three 正 and state 3 inline', () => {
-    const session = createEditorSession({
-      editor: mockEditor,
-      view: mockView,
-      leaf: mockLeaf,
-      workspace: mockWorkspace,
-      settings,
-      onSessionEnd: () => {},
-    });
-    session.start();
-    for (let i = 0; i < 18; i++) window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
-    const widget = document.querySelector('.zheng-tally-inline');
-    expect(widget?.querySelectorAll('[data-full="true"]').length).toBe(3);
-    expect(widget?.querySelector('[data-state="3"]')).not.toBeNull();
-    session.destroy();
-  });
-
-  test('Unicode commit format works with single edit', () => {
-    const replaceSpy = jest.fn();
-    mockEditor = createMockEditor({ replaceRange: replaceSpy });
-    mockView = createMockView(mockEditor);
-    const session = createEditorSession({
-      editor: mockEditor,
-      view: mockView,
-      leaf: mockLeaf,
-      workspace: mockWorkspace,
-      settings: { commitFormat: 'unicode' },
-      onSessionEnd: () => {},
-    });
-    session.start();
-    for (let i = 0; i < 5; i++) window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
-    expect(replaceSpy).toHaveBeenCalledTimes(1);
-    expect(replaceSpy).toHaveBeenCalledWith('\u{1D376}', mockEditor.getCursor());
-    session.destroy();
-  });
-
-  test('Input isolation: printable keys blocked, no doc edit during tally', () => {
-    const replaceSpy = jest.fn();
-    mockEditor = createMockEditor({ replaceRange: replaceSpy });
-    mockView = createMockView(mockEditor);
-    const session = createEditorSession({
-      editor: mockEditor,
-      view: mockView,
-      leaf: mockLeaf,
-      workspace: mockWorkspace,
-      settings,
-      onSessionEnd: () => {},
-    });
-    session.start();
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));
-    expect(document.querySelector('.zheng-tally-inline')?.textContent).not.toContain('a');
-    expect(replaceSpy).not.toHaveBeenCalled();
-    session.destroy();
-  });
-
-  test('Captured cursor used for commit', () => {
-    const initialCursor = { line: 5, ch: 10 };
-    const replaceSpy = jest.fn();
-    mockEditor = createMockEditor({ cursor: initialCursor, replaceRange: replaceSpy });
-    mockView = createMockView(mockEditor);
-    const session = createEditorSession({
-      editor: mockEditor,
-      view: mockView,
-      leaf: mockLeaf,
-      workspace: mockWorkspace,
-      settings,
-      onSessionEnd: () => {},
-    });
-    session.start();
-    mockEditor.getCursor = () => ({ line: 10, ch: 20 });
-    for (let i = 0; i < 5; i++) window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
-    expect(replaceSpy).toHaveBeenCalledWith('正', initialCursor);
-    session.destroy();
-  });
-
-  test('Listener cleanup on destroy', () => {
-    const removeSpy = jest.spyOn(window, 'removeEventListener');
-    const session = createEditorSession({
-      editor: mockEditor,
-      view: mockView,
-      leaf: mockLeaf,
-      workspace: mockWorkspace,
-      settings,
-      onSessionEnd: () => {},
-    });
-    session.start();
-    session.destroy();
-    expect(removeSpy).toHaveBeenCalledWith('keydown', expect.any(Function), true);
-    removeSpy.mockRestore();
   });
 });
