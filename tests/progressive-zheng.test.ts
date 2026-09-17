@@ -8,7 +8,11 @@ import {
   parseCssColor,
   type ZhengTypography,
 } from '../src/zheng-progressive';
-import { createInlineTallyRenderer, readHostTypography } from '../src/renderer';
+import {
+  buildFallbackChip,
+  buildTallyChip,
+  readHostTypography,
+} from '../src/renderer';
 import { resolveEditorHost } from '../src/editor-host';
 
 // ---------------------------------------------------------------------------
@@ -38,12 +42,14 @@ function buildSyntheticZhengAlpha(): Uint8Array {
   fillRect(10, 17, 29, 19); // middle Heng
   fillRect(10, 17, 12, 32); // left Shu
   fillRect(8, 31, 31, 33); // bottom Heng
-  set(8, 5, 128);
-  set(31, 5, 96);
-  set(7, 7, 64);
-  set(32, 32, 140);
-  set(9, 30, 110);
-  set(20, 5, 77);
+  // In-band anti-aliased edge pixels (partial alpha inside true strokes).
+  set(9, 6, 128);
+  set(19, 18, 96);
+  set(11, 25, 140);
+  set(25, 32, 110);
+  // Isolated single-pixel noise: no directional continuity, hidden until S5.
+  set(8, 5, 77);
+  set(32, 5, 64);
   return alpha;
 }
 
@@ -91,6 +97,9 @@ describe('progressive-zheng: pure alpha/mask analysis (synthetic bitmap, no font
       expect(mask5[i]).toBe(hasInk);
     }
     expect(sumMaskedAlpha(alpha, mask5)).toBe(alpha.reduce((a, b) => a + b, 0));
+    for (let i = 0; i < alpha.length; i++) {
+      expect(res.alphas![4][i]).toBe(alpha[i]);
+    }
   });
 
   test('transparent background: zero-alpha source stays zero in every state', () => {
@@ -112,23 +121,104 @@ describe('progressive-zheng: pure alpha/mask analysis (synthetic bitmap, no font
     expect(partial.length).toBeGreaterThan(0);
     const res = analyzeZhengMasks(alpha, SW, SH);
     expect(res.valid).toBe(true);
+    expect(res.alphas).toHaveLength(5);
     const rgb: [number, number, number] = [10, 20, 30];
-    const fringeIdx = 5 * SW + 8;
-    expect(alpha[fringeIdx]).toBe(128);
-    expect(res.masks![0][fringeIdx]).toBe(1);
-    const rgba = recolorWithMask(alpha, res.masks![0], rgb, SW, SH);
-    expect(rgba[fringeIdx * 4 + 3]).toBe(128);
-    for (const mask of res.masks!) {
-      const out = recolorWithMask(alpha, mask, rgb, SW, SH);
+    // Untouched clean pixel keeps its exact value.
+    const topFringe = 6 * SW + 9; // (9,6) top edge, structural
+    expect(alpha[topFringe]).toBe(128);
+    expect(res.masks![0][topFringe]).toBe(1);
+    expect(res.alphas![0][topFringe]).toBe(128);
+    const rgba = recolorWithMask(res.alphas![0], res.masks![0], rgb, SW, SH);
+    expect(rgba[topFringe * 4 + 3]).toBe(128);
+    // Every emitted alpha value is copied from the source glyph (same row or
+    // column clean sample), never synthesized or binarized.
+    const sourceValues = new Set(Array.from(alpha));
+    for (let k = 0; k < 4; k++) {
+      const out = recolorWithMask(res.alphas![k], res.masks![k], rgb, SW, SH);
       for (let i = 0; i < alpha.length; i++) {
-        if (mask[i] && alpha[i] > 0 && alpha[i] < 255) {
-          expect(out[i * 4 + 3]).toBe(alpha[i]);
+        if (res.masks![k][i]) {
+          expect(out[i * 4 + 3]).toBe(res.alphas![k][i]);
+          expect(sourceValues.has(out[i * 4 + 3] as number)).toBe(true);
+        } else {
+          expect(out[i * 4 + 3]).toBe(0);
         }
       }
     }
+    // Isolated noise has no directional continuity: hidden until S5.
+    const noise = 5 * SW + 8; // (8,5)
+    expect(alpha[noise]).toBe(77);
+    expect(res.masks![0][noise]).toBe(0);
+    expect(res.masks![3][noise]).toBe(0);
+    expect(res.masks![4][noise]).toBe(1);
+    expect(res.alphas![4][noise]).toBe(77);
   });
 
-  test('stroke ownership: state1 has no central nub', () => {
+  function countComponents(mask: Uint8Array, w: number, h: number): number {
+    const seen = new Uint8Array(w * h);
+    let components = 0;
+    const stack: number[] = [];
+    for (let i = 0; i < w * h; i++) {
+      if (!mask[i] || seen[i]) continue;
+      components++;
+      stack.push(i);
+      seen[i] = 1;
+      while (stack.length > 0) {
+        const cur = stack.pop() as number;
+        const cx = cur % w;
+        const cy = Math.floor(cur / w);
+        const neighbors = [
+          [cx - 1, cy],
+          [cx + 1, cy],
+          [cx, cy - 1],
+          [cx, cy + 1],
+        ];
+        for (const [nx, ny] of neighbors) {
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const ni = ny * w + nx;
+          if (mask[ni] && !seen[ni]) {
+            seen[ni] = 1;
+            stack.push(ni);
+          }
+        }
+      }
+    }
+    return components;
+  }
+
+  test('S1 top bar thickness is continuous across the center (no block/nub)', () => {
+    const alpha = buildSyntheticZhengAlpha();
+    const res = analyzeZhengMasks(alpha, SW, SH);
+    expect(res.valid).toBe(true);
+    const [t0, t1] = res.meta!.top;
+    const a1 = res.alphas![0];
+    // Every row of the reconstructed top bar carries ink across the central
+    // interval with the row's own clean level: no sudden thickening.
+    for (let y = t0; y <= t1; y++) {
+      let centerMin = 255;
+      let sideMax = 0;
+      for (let x = 8; x <= 31; x++) {
+        const v = a1[y * SW + x];
+        if (x >= 17 && x <= 21) {
+          if (v > 0 && v < centerMin) centerMin = v;
+        } else if (v > sideMax) {
+          sideMax = v;
+        }
+      }
+      expect(centerMin).toBeGreaterThan(0);
+      expect(Math.abs(centerMin - sideMax)).toBeLessThanOrEqual(40);
+    }
+  });
+
+  test('S1–S4 each form a single connected stroke (no isolated ghost blocks)', () => {
+    const alpha = buildSyntheticZhengAlpha();
+    const res = analyzeZhengMasks(alpha, SW, SH);
+    expect(res.valid).toBe(true);
+    for (let k = 0; k < 4; k++) {
+      expect(countComponents(res.masks![k], SW, SH)).toBe(1);
+    }
+  });
+
+  test('stroke ownership: state1 has no central nub (exact zero)', () => {
     const alpha = buildSyntheticZhengAlpha();
     const res = analyzeZhengMasks(alpha, SW, SH);
     expect(res.valid).toBe(true);
@@ -139,9 +229,16 @@ describe('progressive-zheng: pure alpha/mask analysis (synthetic bitmap, no font
         expect(m1[y * SW + x]).toBe(0);
       }
     }
+    // No ink at all below the top band in state 1.
+    const top = res.meta!.top;
+    for (let y = top[1] + 1; y < SH; y++) {
+      for (let x = 0; x < SW; x++) {
+        expect(m1[y * SW + x]).toBe(0);
+      }
+    }
   });
 
-  test('stroke ownership: state3 has no left vertical body', () => {
+  test('stroke ownership: state3 has no left vertical body (exact zero)', () => {
     const alpha = buildSyntheticZhengAlpha();
     const res = analyzeZhengMasks(alpha, SW, SH);
     expect(res.valid).toBe(true);
@@ -158,7 +255,7 @@ describe('progressive-zheng: pure alpha/mask analysis (synthetic bitmap, no font
     }
   });
 
-  test('stroke ownership: state4 has no bottom side arms', () => {
+  test('stroke ownership: state4 has no bottom side arms (exact zero)', () => {
     const alpha = buildSyntheticZhengAlpha();
     const res = analyzeZhengMasks(alpha, SW, SH);
     expect(res.valid).toBe(true);
@@ -261,7 +358,7 @@ describe('progressive-zheng: color / mask cache separation', () => {
   });
 });
 
-describe('progressive-zheng: inline renderer DOM + theme', () => {
+describe('progressive-zheng: true inline chip DOM + theme', () => {
   const mockHost = (color = 'rgb(0, 0, 0)') => {
     const dom = document.createElement('div');
     dom.style.fontFamily = 'SimSun, serif';
@@ -284,58 +381,49 @@ describe('progressive-zheng: inline renderer DOM + theme', () => {
     return { dom, editor, host };
   };
 
+  const chipFor = (n: number, color = 'rgb(0, 0, 0)') => {
+    const { host } = mockHost(color);
+    return buildTallyChip(n, host.typography, null);
+  };
+
   afterEach(() => {
     document.body.innerHTML = '';
   });
 
-  test('inline widget is normal path (not position:fixed)', () => {
-    const { dom, host } = mockHost();
-    const renderer = createInlineTallyRenderer(host);
-    expect(renderer.isFallback).toBe(false);
-    expect(renderer.element.className).toContain('zheng-tally-inline');
-    expect(renderer.element.style.position).not.toBe('fixed');
-    dom.appendChild(renderer.element);
-    renderer.update(3);
-    expect(renderer.element.querySelector('[data-state="3"]')).not.toBeNull();
-    renderer.destroy();
-    expect(dom.querySelector('.zheng-tally-inline')).toBeNull();
+  test('true inline chip participates in layout (not absolute/fixed)', () => {
+    const chip = chipFor(3);
+    expect(chip.className).toContain('zheng-tally-inline');
+    expect(chip.style.position).not.toBe('absolute');
+    expect(chip.style.position).not.toBe('fixed');
+    expect(chip.querySelector('[data-state="3"]')).not.toBeNull();
   });
 
-  test('fallback does not throw when rasterization is unavailable (jsdom)', () => {
-    const { host } = mockHost();
-    let renderer;
-    expect(() => {
-      renderer = createInlineTallyRenderer(host);
-    }).not.toThrow();
+  test('chip build does not throw when rasterization is unavailable (jsdom fallback [N])', () => {
     for (const n of [1, 2, 3, 4, 5]) {
-      expect(() => renderer!.update(n)).not.toThrow();
+      let el: HTMLElement | null = null;
+      expect(() => {
+        el = chipFor(n);
+      }).not.toThrow();
+      expect(el!).not.toBeNull();
     }
-    expect(() => renderer!.destroy()).not.toThrow();
   });
 
-  test('states 1-3 never render 一/丁/下; states use canvas or explicit [N] fallback', () => {
-    const { dom, host } = mockHost();
-    const renderer = createInlineTallyRenderer(host);
-    dom.appendChild(renderer.element);
-    for (const n of [1, 2, 3]) {
-      renderer.update(n);
-      const text = renderer.element.textContent || '';
+  test('states 1-5 render canonical vector strokes (no 一/丁/下 text)', () => {
+    for (const n of [1, 2, 3, 4, 5]) {
+      const el = chipFor(n);
+      const svg = el.querySelector('svg.zt-svg');
+      expect(svg).not.toBeNull();
+      expect(svg!.querySelectorAll('path').length).toBe(n);
+      const text = el.textContent || '';
       expect(text).not.toContain('一');
       expect(text).not.toContain('丁');
       expect(text).not.toContain('下');
-      const hasCanvas = renderer.element.querySelector('canvas') !== null;
-      const hasFallback = text.includes(`[${n}]`);
-      expect(hasCanvas || hasFallback).toBe(true);
     }
-    renderer.destroy();
   });
 
   test('inline CSS contains no hardcoded light/dark backgrounds and no fixed overlay', () => {
-    const { dom, host } = mockHost();
-    const renderer = createInlineTallyRenderer(host);
-    dom.appendChild(renderer.element);
-    renderer.update(2);
-    const css = `${renderer.element.innerHTML} ${(renderer.element as HTMLElement).style.cssText}`;
+    const el = chipFor(2);
+    const css = `${el.innerHTML} ${el.style.cssText}`;
     expect(css).not.toMatch(/#fff/i);
     expect(css).not.toMatch(/#fafafa/i);
     expect(css).not.toMatch(/#ccc/i);
@@ -344,25 +432,52 @@ describe('progressive-zheng: inline renderer DOM + theme', () => {
     expect(src).toContain('--background-modifier-border');
     expect(src).not.toMatch(/--background-secondary,\s*#[0-9a-fA-F]{3,6}/);
     expect(src).not.toMatch(/--background-modifier-border,\s*#[0-9a-fA-F]{3,6}/);
-    // Normal inline element must not be fixed; fixed only in explicit fallback.
-    expect((renderer.element as HTMLElement).style.position).toBe('absolute');
-    renderer.destroy();
+    // Normal chip must not be positioned; fixed only in explicit fallback.
+    expect(el.style.position).not.toBe('absolute');
+    expect(el.style.position).not.toBe('fixed');
+    const rendererSrc = src;
+    expect(rendererSrc).toContain('data-fallback-mode');
   });
 
-  test('count 18 renders three complete 正 + progressive state 3 (no 一/丁/下)', () => {
-    const { dom, host } = mockHost();
-    const renderer = createInlineTallyRenderer(host);
-    dom.appendChild(renderer.element);
-    renderer.update(18);
-    const fulls = renderer.element.querySelectorAll('[data-full="true"]');
-    const partial = renderer.element.querySelector('[data-state="3"]');
-    expect(fulls.length).toBe(3);
-    expect(partial).not.toBeNull();
-    const text = renderer.element.textContent || '';
+  test('group slots <= 4 render fully; beyond that compact keeps current group', () => {
+    const el8 = chipFor(8);
+    expect(el8.querySelectorAll('[data-full="true"]').length).toBe(1);
+    expect(el8.querySelector('[data-state="3"]')).not.toBeNull();
+    expect(el8.querySelector('.zt-ellipsis')).toBeNull();
+    expect(el8.querySelector('.zt-total')?.textContent).toBe('8');
+    const el18 = chipFor(18);
+    expect(el18.querySelectorAll('[data-full="true"]').length).toBe(3);
+    expect(el18.querySelector('.zt-ellipsis')).toBeNull();
+    expect(el18.querySelector('[data-state="3"]')).not.toBeNull();
+    expect(el18.querySelector('.zt-total')?.textContent).toBe('18');
+    expect(el18.getAttribute('data-count')).toBe('18');
+    const el21 = chipFor(21);
+    expect(el21.querySelectorAll('[data-full="true"]').length).toBe(3);
+    expect(el21.querySelector('.zt-ellipsis')).not.toBeNull();
+    expect(el21.querySelector('[data-state="1"]')).not.toBeNull();
+    expect(el21.querySelector('.zt-total')?.textContent).toBe('21');
+    const text = el21.textContent || '';
     expect(text).not.toContain('下');
     expect(text).not.toContain('一');
     expect(text).not.toContain('丁');
-    renderer.destroy();
+  });
+
+  test('fallback chip is explicit text (catastrophic path only)', () => {
+    const { host } = mockHost();
+    const el = buildFallbackChip(3, host.typography);
+    expect(el.getAttribute('data-fallback')).toBe('text');
+  });
+
+  test('production normal path has no absolute/fixed inline positioning', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.ts'), 'utf8');
+    // buildTallyChip (normal path) must not set absolute/fixed positioning.
+    const chipStart = src.indexOf('export function buildTallyChip');
+    const fallbackStart = src.indexOf('export function createFallbackOverlayRenderer');
+    const chipFn = src.slice(chipStart, fallbackStart);
+    const fallbackFn = src.slice(fallbackStart);
+    expect(chipFn).not.toMatch(/position\s*:\s*absolute/);
+    expect(chipFn).not.toMatch(/position\s*:\s*fixed/);
+    expect(fallbackFn).toMatch(/data-fallback-mode/);
   });
 
   test('readHostTypography reads family/size/weight/style/color + DPR', () => {

@@ -97,95 +97,70 @@ export interface ZhengMaskResult {
   valid: boolean;
   reason?: string;
   masks?: Uint8Array[];
+  alphas?: Uint8Array[];
   meta?: {
-    gapY1: number;
-    gapY2: number;
-    midTop: number;
-    midBot: number;
-    leftL: number;
-    leftR: number;
-    centralL: number;
-    centralR: number;
-    yTop: number;
-    yMid: number;
-    yBot: number;
-    xLeft: number;
-    xCentral: number;
+    top: [number, number];
+    mid: [number, number];
+    bot: [number, number];
+    centralCols: [number, number];
+    centralRows: [number, number];
+    leftCols: [number, number];
+    leftRows: [number, number];
+    hThresh: number;
+    vThresh: number;
     bbox: { x0: number; x1: number; y0: number; y1: number };
     fractions: number[];
-    strokeFractions: number[];
+    addShares: number[];
   };
 }
 
-function smooth1D(values: number[], radius: number): number[] {
-  if (radius <= 0) return values.slice();
-  const out = new Array<number>(values.length);
-  for (let i = 0; i < values.length; i++) {
-    let sum = 0;
-    let n = 0;
-    for (let k = i - radius; k <= i + radius; k++) {
-      if (k >= 0 && k < values.length) {
-        sum += values[k];
-        n++;
-      }
+interface SpanGroup {
+  a0: number;
+  a1: number;
+  mass: number;
+}
+
+function contiguousGroups(has: boolean[], massOf: (i: number) => number): SpanGroup[] {
+  const groups: SpanGroup[] = [];
+  let i = 0;
+  while (i < has.length) {
+    if (!has[i]) {
+      i++;
+      continue;
     }
-    out[i] = sum / Math.max(1, n);
+    const a0 = i;
+    let mass = 0;
+    while (i < has.length && has[i]) {
+      mass += massOf(i);
+      i++;
+    }
+    groups.push({ a0, a1: i - 1, mass });
   }
-  return out;
-}
-
-function argMinRange(values: number[], lo: number, hi: number): number {
-  const l = Math.max(0, lo);
-  const h = Math.min(values.length - 1, hi);
-  let best = l;
-  for (let i = l + 1; i <= h; i++) {
-    if (values[i] < values[best]) best = i;
-  }
-  return best;
-}
-
-function argMaxRange(values: number[], lo: number, hi: number): number {
-  const l = Math.max(0, lo);
-  const h = Math.min(values.length - 1, hi);
-  let best = l;
-  for (let i = l + 1; i <= h; i++) {
-    if (values[i] > values[best]) best = i;
-  }
-  return best;
+  return groups;
 }
 
 /**
- * Dedicated analysis for the single character 正 with stroke ownership.
+ * Dedicated analysis for the single character 正: orientation-first extraction.
  *
  * Expected stroke order:
  * 1 top horizontal, 2 central vertical, 3 middle horizontal,
  * 4 left vertical, 5 bottom horizontal.
  *
- * Method: complete glyph alpha -> locate 3 horizontal centers (yTop/yMid/yBot)
- * and 2 vertical centers (xLeft/xCentral) via ink projections + valley search,
- * then assign every ink pixel to exactly one stroke by distance to its
- * centerline segment. Crossings tie-break to the earlier stroke (writing-order
- * ownership), so future-stroke bodies never leak early. Progressive states are
- * unions of exclusive stroke masks, not粗 rectangular reveals.
+ * Method: from the complete glyph alpha bitmap, keep only ink with genuine
+ * directional continuity (horizontal run-length for horizontals, vertical
+ * run-length for verticals, thresholds relative to the glyph bbox). A short
+ * central nub can never enter a horizontal stroke and horizontal thickness
+ * can never enter a vertical stroke. Horizontal candidates cluster into
+ * top/middle/bottom bands, vertical candidates into central/left columns.
+ * Junction pixels shared by both directions surface with the earlier stroke;
+ * mixed alpha failing its owner's gate stays hidden until state 5.
+ * Progressive states are cleaned unions, never粗 rectangular reveals, and
+ * state 5 restores the original glyph pixel-for-pixel.
  *
  * Masks are binary selections; original per-pixel alpha (including partial
  * anti-aliased values) is preserved by the caller. Background (alpha 0)
  * is never included.
  */
-function distToHSeg(x: number, y: number, yC: number, xA: number, xB: number): number {
-  const cx = x < xA ? xA : x > xB ? xB : x;
-  const dx = x - cx;
-  const dy = y - yC;
-  return Math.sqrt(dx * dx + dy * dy);
-}
-
-function distToVSeg(x: number, y: number, xC: number, yA: number, yB: number): number {
-  const cy = y < yA ? yA : y > yB ? yB : y;
-  const dx = x - xC;
-  const dy = y - cy;
-  return Math.sqrt(dx * dx + dy * dy);
-}
-
 export function analyzeZhengMasks(
   alpha: Uint8Array,
   width: number,
@@ -229,126 +204,270 @@ export function analyzeZhengMasks(
   const coverage = inkPixels / (width * height);
   if (coverage < 0.005) return { valid: false, reason: 'ink-too-sparse' };
 
-  const rowSums = new Array<number>(height).fill(0);
-  const colSums = new Array<number>(width).fill(0);
+  // Binary structure: faint AA (<=10) rides along only inside true strokes.
+  const B = new Uint8Array(width * height);
+  for (let i = 0; i < alpha.length; i++) B[i] = alpha[i] > 10 ? 1 : 0;
+
+  // Per-pixel directional run support.
+  const hRun = new Uint16Array(width * height);
   for (let y = 0; y < height; y++) {
-    let rs = 0;
-    for (let x = 0; x < width; x++) {
-      const a = alpha[y * width + x];
-      rs += a;
-      colSums[x] += a;
+    let x = 0;
+    while (x < width) {
+      if (!B[y * width + x]) {
+        x++;
+        continue;
+      }
+      let x1r = x;
+      while (x1r + 1 < width && B[y * width + x1r + 1]) x1r++;
+      const len = x1r - x + 1;
+      for (let k = x; k <= x1r; k++) hRun[y * width + k] = len;
+      x = x1r + 1;
     }
-    rowSums[y] = rs;
   }
-
-  const radius = Math.min(3, Math.max(1, Math.floor(Math.min(width, height) / 40)));
-  const sR = smooth1D(rowSums, radius);
-  const sC = smooth1D(colSums, radius);
-
-  const w1lo = y0 + Math.round(bh * 0.18);
-  const w1hi = y0 + Math.round(bh * 0.38);
-  const w2lo = y0 + Math.round(bh * 0.55);
-  const w2hi = y0 + Math.round(bh * 0.78);
-  if (w1hi >= w2lo || w1lo > w1hi || w2lo > w2hi) {
-    return { valid: false, reason: 'bad-y-windows' };
-  }
-  const gapY1 = argMinRange(sR, w1lo, w1hi);
-  const gapY2 = argMinRange(sR, w2lo, w2hi);
-  if (gapY1 >= gapY2) return { valid: false, reason: 'bad-y-gaps' };
-
-  const yTopPeak = argMaxRange(sR, y0, gapY1);
-  const yMidPeak = argMaxRange(sR, gapY1, gapY2);
-  const yBotPeak = argMaxRange(sR, gapY2, y1);
-  const topPeak = sR[yTopPeak];
-  const midPeak = sR[yMidPeak];
-  const botPeak = sR[yBotPeak];
-  const gapAvgY = (sR[gapY1] + sR[gapY2]) / 2;
-  if (!(midPeak > gapAvgY * 1.15)) return { valid: false, reason: 'weak-middle-peak' };
-  if (!(topPeak > sR[gapY1] * 1.15)) return { valid: false, reason: 'weak-top-peak' };
-  if (!(botPeak > sR[gapY2] * 1.15)) return { valid: false, reason: 'weak-bottom-peak' };
-
-  const midThresh = gapAvgY + (midPeak - gapAvgY) * 0.35;
-  let midTop = yMidPeak;
-  while (midTop > gapY1 && sR[midTop - 1] > midThresh) midTop--;
-  let midBot = yMidPeak;
-  while (midBot < gapY2 && sR[midBot + 1] > midThresh) midBot++;
-  if (midTop > yMidPeak || midBot < yMidPeak) return { valid: false, reason: 'bad-middle-band' };
-  if (midBot - midTop + 1 > Math.max(2, Math.round(bh * 0.32))) {
-    return { valid: false, reason: 'middle-band-too-wide' };
-  }
-
-  const wxlo = x0 + Math.round(bw * 0.28);
-  const wxhi = x0 + Math.round(bw * 0.48);
-  if (wxlo > wxhi) return { valid: false, reason: 'bad-x-window' };
-  const gapX = argMinRange(sC, wxlo, wxhi);
-  const xLeftPeak = argMaxRange(sC, x0, gapX);
-  const xCentralPeak = argMaxRange(sC, gapX, x1);
-  const gapC = sC[gapX];
-  const leftPeak = sC[xLeftPeak];
-  const centralPeak = sC[xCentralPeak];
-  if (!(leftPeak > gapC * 1.15)) return { valid: false, reason: 'weak-left-peak' };
-  if (!(centralPeak > gapC * 1.15)) return { valid: false, reason: 'weak-central-peak' };
-
-  const leftThresh = gapC + (leftPeak - gapC) * 0.35;
-  let leftL = xLeftPeak;
-  while (leftL > x0 && sC[leftL - 1] > leftThresh) leftL--;
-  let leftR = xLeftPeak;
-  while (leftR < gapX && sC[leftR + 1] > leftThresh) leftR++;
-  const centralThresh = gapC + (centralPeak - gapC) * 0.35;
-  let centralL = xCentralPeak;
-  while (centralL > gapX && sC[centralL - 1] > centralThresh) centralL--;
-  let centralR = xCentralPeak;
-  while (centralR < x1 && sC[centralR + 1] > centralThresh) centralR++;
-  if (leftR >= centralL) return { valid: false, reason: 'columns-overlap' };
-
-  // Stroke centerlines from projection peaks (same glyph, exclusive ownership).
-  const yTop = yTopPeak;
-  const yMid = yMidPeak;
-  const yBot = yBotPeak;
-  const xLeft = xLeftPeak;
-  const xCentral = xCentralPeak;
-
-  const strokeOf = new Uint8Array(width * height);
-  const strokeSums = [0, 0, 0, 0, 0];
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = y * width + x;
-      if (alpha[idx] === 0) continue;
-      const d1 = distToHSeg(x, y, yTop, x0, x1);
-      const d2 = distToVSeg(x, y, xCentral, yTop, yBot);
-      const d3 = distToHSeg(x, y, yMid, x0, x1);
-      const d4 = distToVSeg(x, y, xLeft, yMid, yBot);
-      const d5 = distToHSeg(x, y, yBot, x0, x1);
-      let best = 0;
-      let bestD = d1;
-      if (d2 < bestD - 1e-9) {
-        best = 1;
-        bestD = d2;
+  const vRun = new Uint16Array(width * height);
+  for (let x = 0; x < width; x++) {
+    let y = 0;
+    while (y < height) {
+      if (!B[y * width + x]) {
+        y++;
+        continue;
       }
-      if (d3 < bestD - 1e-9) {
-        best = 2;
-        bestD = d3;
-      }
-      if (d4 < bestD - 1e-9) {
-        best = 3;
-        bestD = d4;
-      }
-      if (d5 < bestD - 1e-9) {
-        best = 4;
-        bestD = d5;
-      }
-      strokeOf[idx] = best + 1;
-      strokeSums[best] += alpha[idx];
+      let y1r = y;
+      while (y1r + 1 < height && B[(y1r + 1) * width + x]) y1r++;
+      const len = y1r - y + 1;
+      for (let k = y; k <= y1r; k++) vRun[k * width + x] = len;
+      y = y1r + 1;
     }
   }
 
-  const masks: Uint8Array[] = [];
-  for (let k = 0; k < 5; k++) masks.push(new Uint8Array(width * height));
-
+  // Continuity thresholds relative to the glyph bbox: a 2-3px nub or bar
+  // thickness can never qualify as the transverse stroke.
+  const hThresh = Math.max(3, Math.round(bw * 0.3));
+  const vThresh = Math.max(3, Math.round(bh * 0.25));
+  const Hcand = new Uint8Array(width * height);
+  const Vcand = new Uint8Array(width * height);
   for (let i = 0; i < alpha.length; i++) {
-    const s = strokeOf[i];
-    if (s === 0) continue;
-    for (let k = s - 1; k < 5; k++) masks[k][i] = 1;
+    if (!B[i]) continue;
+    if (hRun[i] >= hThresh) Hcand[i] = 1;
+    if (vRun[i] >= vThresh) Vcand[i] = 1;
+  }
+
+  // Three horizontal bands from Hcand rows (verticals are excluded by
+  // construction, so bands separate cleanly).
+  const hRowHas = new Array<boolean>(height).fill(false);
+  const hRowMass = new Array<number>(height).fill(0);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (Hcand[y * width + x]) {
+        hRowHas[y] = true;
+        hRowMass[y]++;
+      }
+    }
+  }
+  let hGroups = contiguousGroups(hRowHas, (y) => hRowMass[y]);
+  if (hGroups.length < 3) return { valid: false, reason: 'h-bands' };
+  if (hGroups.length > 3) {
+    hGroups = hGroups
+      .slice()
+      .sort((a, b) => b.mass - a.mass)
+      .slice(0, 3);
+  }
+  hGroups.sort((a, b) => a.a0 - b.a0);
+  const [topG, midG, botG] = hGroups;
+  if (!(topG.a1 < midG.a0 && midG.a1 < botG.a0)) return { valid: false, reason: 'h-bands-merge' };
+  const maxBandH = Math.max(3, Math.round(bh * 0.3));
+  for (const g of hGroups) {
+    if (g.a1 - g.a0 + 1 > maxBandH) return { valid: false, reason: 'h-band-too-wide' };
+    if (g.mass < Math.max(4, inkPixels * 0.03)) return { valid: false, reason: 'h-band-weak' };
+  }
+  const t0 = topG.a0;
+  const t1 = topG.a1;
+  const m0 = midG.a0;
+  const m1 = midG.a1;
+  const b0 = botG.a0;
+  const b1 = botG.a1;
+
+  // Two verticals from Vcand columns (horizontals excluded by construction).
+  const vColHas = new Array<boolean>(width).fill(false);
+  const vColMass = new Array<number>(width).fill(0);
+  const vColMinY = new Array<number>(width).fill(height);
+  const vColMaxY = new Array<number>(width).fill(-1);
+  for (let x = 0; x < width; x++) {
+    for (let y = 0; y < height; y++) {
+      if (Vcand[y * width + x]) {
+        vColHas[x] = true;
+        vColMass[x]++;
+        if (y < vColMinY[x]) vColMinY[x] = y;
+        if (y > vColMaxY[x]) vColMaxY[x] = y;
+      }
+    }
+  }
+  let vGroups = contiguousGroups(vColHas, (x) => vColMass[x]);
+  if (vGroups.length < 2) return { valid: false, reason: 'v-cols' };
+  if (vGroups.length > 2) {
+    vGroups = vGroups
+      .slice()
+      .sort((a, b) => b.mass - a.mass)
+      .slice(0, 2);
+  }
+  vGroups.sort((a, b) => a.a0 - b.a0);
+  const [leftG, centralG] = vGroups;
+  if (!(leftG.a1 < centralG.a0)) return { valid: false, reason: 'v-cols-merge' };
+  let cMinY = height;
+  let cMaxY = -1;
+  for (let x = centralG.a0; x <= centralG.a1; x++) {
+    if (!vColHas[x]) continue;
+    if (vColMinY[x] < cMinY) cMinY = vColMinY[x];
+    if (vColMaxY[x] > cMaxY) cMaxY = vColMaxY[x];
+  }
+  let lMinY = height;
+  let lMaxY = -1;
+  for (let x = leftG.a0; x <= leftG.a1; x++) {
+    if (!vColHas[x]) continue;
+    if (vColMinY[x] < lMinY) lMinY = vColMinY[x];
+    if (vColMaxY[x] > lMaxY) lMaxY = vColMaxY[x];
+  }
+  // Central spans top->bottom; left starts below the top band at/near the
+  // middle band (its detected top may sit a few rows above the middle bar
+  // where the two strokes merge) and reaches the bottom band.
+  if (!(cMinY <= t1 + 2 && cMaxY >= b0 - 2)) return { valid: false, reason: 'v-central-span' };
+  if (!(lMinY > t1 && lMinY <= m1 + 1 && lMaxY >= b0 - 2)) return { valid: false, reason: 'v-left-span' };
+  if (centralG.mass < Math.max(4, inkPixels * 0.03)) return { valid: false, reason: 'v-central-weak' };
+  if (leftG.mass < Math.max(4, inkPixels * 0.02)) return { valid: false, reason: 'v-left-weak' };
+  const cx0 = centralG.a0;
+  const cx1 = centralG.a1;
+  const lx0 = leftG.a0;
+  const lx1 = leftG.a1;
+
+  // ---- Stroke reconstruction (independent strokes, explicit junctions) ----
+  // Contaminated x-intervals where strokes merge; margin 1px so flares belong
+  // to no early state. Clean samples come from the same glyph's unmerged runs.
+  const cenX0 = cx0 - 1;
+  const cenX1 = cx1 + 1;
+  const glLeftX0 = lx0 - 1;
+  const glLeftX1 = lx1 + 1;
+  const inBandTop = (y: number): boolean => y >= t0 && y <= t1;
+  const inBandMid = (y: number): boolean => y >= m0 && y <= m1;
+
+  // Per-row clean reference for horizontals: max alpha outside contaminated
+  // intervals on that row (0 when the row offers no clean ink).
+  const refTop = new Uint8Array(height);
+  const refMid = new Uint8Array(height);
+  for (let y = t0; y <= t1; y++) {
+    let m = 0;
+    for (let x = x0; x <= x1; x++) {
+      if (x >= cenX0 && x <= cenX1) continue;
+      const a = alpha[y * width + x];
+      if (a > m) m = a;
+    }
+    refTop[y] = m;
+  }
+  for (let y = m0; y <= m1; y++) {
+    let m = 0;
+    for (let x = x0; x <= x1; x++) {
+      if ((x >= cenX0 && x <= cenX1) || (x >= glLeftX0 && x <= glLeftX1)) continue;
+      const a = alpha[y * width + x];
+      if (a > m) m = a;
+    }
+    refMid[y] = m;
+  }
+  // Per-column clean reference for verticals: max alpha outside band rows.
+  const refCen = new Uint8Array(width);
+  const refLeft = new Uint8Array(width);
+  for (let x = cx0; x <= cx1; x++) {
+    let m = 0;
+    for (let y = t0; y < b0; y++) {
+      if (inBandTop(y) || inBandMid(y)) continue;
+      const a = alpha[y * width + x];
+      if (a > m) m = a;
+    }
+    refCen[x] = m;
+  }
+  for (let x = lx0; x <= lx1; x++) {
+    let m = 0;
+    for (let y = lMinY; y < b0; y++) {
+      if (inBandMid(y)) continue;
+      const a = alpha[y * width + x];
+      if (a > m) m = a;
+    }
+    refLeft[x] = m;
+  }
+
+  // Reconstructed stroke alpha maps. Junctions use the owner stroke's own
+  // clean profile; future strokes never contribute early. Verticals end flat
+  // above the bottom band; the bottom band arrives whole with S5.
+  const topR = new Uint8Array(width * height);
+  const cenR = new Uint8Array(width * height);
+  const midR = new Uint8Array(width * height);
+  const leftR = new Uint8Array(width * height);
+  for (let y = t0; y <= t1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const i = y * width + x;
+      if (alpha[i] === 0) continue;
+      topR[i] = x >= cenX0 && x <= cenX1 ? refTop[y] || alpha[i] : alpha[i];
+    }
+  }
+  for (let y = t0; y < b0; y++) {
+    for (let x = cx0; x <= cx1; x++) {
+      const i = y * width + x;
+      if (alpha[i] === 0) continue;
+      const inBand = inBandTop(y) || inBandMid(y);
+      cenR[i] = inBand ? refCen[x] || alpha[i] : alpha[i];
+    }
+  }
+  for (let y = m0; y <= m1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const i = y * width + x;
+      if (alpha[i] === 0) continue;
+      const inCen = x >= cenX0 && x <= cenX1;
+      const inL = x >= glLeftX0 && x <= glLeftX1;
+      midR[i] = inCen || inL ? refMid[y] || alpha[i] : alpha[i];
+    }
+  }
+  for (let y = lMinY; y < b0; y++) {
+    for (let x = lx0; x <= lx1; x++) {
+      const i = y * width + x;
+      if (alpha[i] === 0) continue;
+      leftR[i] = inBandMid(y) ? refLeft[x] || alpha[i] : alpha[i];
+    }
+  }
+
+  // Progressive composition by alpha union (max). S5 restores full original.
+  const masks: Uint8Array[] = [];
+  const alphas: Uint8Array[] = [];
+  for (let k = 0; k < 5; k++) {
+    masks.push(new Uint8Array(width * height));
+    alphas.push(new Uint8Array(width * height));
+  }
+  const layers = [topR, cenR, midR, leftR];
+  const addSums = [0, 0, 0, 0, 0];
+  for (let k = 0; k < 4; k++) {
+    const prevA = alphas[k];
+    const prevM = masks[k];
+    if (k > 0) {
+      prevA.set(alphas[k - 1]);
+      prevM.set(masks[k - 1]);
+    }
+    const layer = layers[k];
+    for (let i = 0; i < alpha.length; i++) {
+      const v = layer[i];
+      if (v === 0) continue;
+      if (prevM[i] === 0) addSums[k] += v;
+      prevM[i] = 1;
+      if (v > prevA[i]) prevA[i] = v;
+    }
+  }
+  {
+    const fullM = masks[4];
+    const fullA = alphas[4];
+    const prevM = masks[3];
+    for (let i = 0; i < alpha.length; i++) {
+      if (alpha[i] > 0) {
+        if (prevM[i] === 0) addSums[4] += alpha[i];
+        fullM[i] = 1;
+        fullA[i] = alpha[i];
+      }
+    }
   }
 
   const sums = masks.map((m) => {
@@ -357,17 +476,17 @@ export function analyzeZhengMasks(
     return s;
   });
   const fractions = sums.map((s) => s / total);
-  const strokeFractions = strokeSums.map((s) => s / total);
+  const addShares = addSums.map((s) => s / total);
   const [f1, f2, f3, f4] = fractions;
-  if (!(f1 >= 0.05 && f1 <= 0.6)) return { valid: false, reason: 'bad-f1' };
-  if (!(f2 > f1 && f2 >= 0.15 && f2 <= 0.8)) return { valid: false, reason: 'bad-f2' };
-  if (!(f3 > f2 && f3 >= 0.3 && f3 <= 0.92)) return { valid: false, reason: 'bad-f3' };
+  if (!(f1 >= 0.04 && f1 <= 0.6)) return { valid: false, reason: 'bad-f1' };
+  if (!(f2 > f1 && f2 >= 0.15 && f2 <= 0.85)) return { valid: false, reason: 'bad-f2' };
+  if (!(f3 > f2 && f3 >= 0.3 && f3 <= 0.93)) return { valid: false, reason: 'bad-f3' };
   if (!(f4 > f3 && f4 >= 0.5 && f4 <= 0.995)) return { valid: false, reason: 'bad-f4' };
-  if (!(f2 - f1 > 0.02 && f3 - f2 > 0.02 && f4 - f3 > 0.02)) {
+  if (!(f2 - f1 > 0.015 && f3 - f2 > 0.015 && f4 - f3 > 0.015)) {
     return { valid: false, reason: 'stroke-too-small' };
   }
-  for (const sf of strokeFractions) {
-    if (!(sf >= 0.03 && sf <= 0.6)) return { valid: false, reason: 'bad-stroke-share' };
+  for (const sf of addShares) {
+    if (!(sf >= 0.02 && sf <= 0.65)) return { valid: false, reason: 'bad-stroke-share' };
   }
   // Strict superset check on ink pixels.
   for (let n = 1; n < 5; n++) {
@@ -386,23 +505,20 @@ export function analyzeZhengMasks(
   return {
     valid: true,
     masks,
+    alphas,
     meta: {
-      gapY1,
-      gapY2,
-      midTop,
-      midBot,
-      leftL,
-      leftR,
-      centralL,
-      centralR,
-      yTop,
-      yMid,
-      yBot,
-      xLeft,
-      xCentral,
+      top: [t0, t1],
+      mid: [m0, m1],
+      bot: [b0, b1],
+      centralCols: [cx0, cx1],
+      centralRows: [cMinY, cMaxY],
+      leftCols: [lx0, lx1],
+      leftRows: [lMinY, lMaxY],
+      hThresh,
+      vThresh,
       bbox: { x0, x1, y0, y1 },
       fractions,
-      strokeFractions,
+      addShares,
     },
   };
 }

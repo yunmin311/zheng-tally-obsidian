@@ -30,5 +30,9 @@
     "obsidian": "^1.5.12",
     "ts-jest": "^29.1.2",
     "typescript": "^5.4.5"
+  },
+  "dependencies": {
+    "@codemirror/state": "^6.5.0",
+    "@codemirror/view": "^6.38.6"
   }
 }

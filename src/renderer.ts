@@ -1,19 +1,14 @@
 import type { ZhengTypography } from './zheng-progressive';
 import {
-  ZHENG_GLYPH,
-  analyzeZhengMasks,
-  buildMaskCacheKey,
-  computeBackingSize,
-  parseCssColor,
-  parseCssSize,
-  recolorWithMask,
-} from './zheng-progressive';
-import type { ResolvedEditorHost } from './editor-host';
+  ZHENG_FLIP_TRANSFORM,
+  ZHENG_STROKES,
+  ZHENG_VIEWBOX,
+} from './zheng-strokes';
 
 export type { ZhengTypography };
 export type EditorTypography = ZhengTypography;
 
-const FULL_GLYPH = ZHENG_GLYPH;
+const SVG_NS = 'http://www.w3.org/2000/svg';
 
 export interface InlineTallyRenderer {
   readonly element: HTMLElement;
@@ -58,339 +53,233 @@ export function applyTypography(el: HTMLElement, typo: ZhengTypography): void {
   el.style.color = typo.color;
 }
 
-interface GlyphCacheEntry {
-  key: string;
-  width: number;
-  height: number;
-  alpha: Uint8Array;
-  masks: Uint8Array[];
+/**
+ * One canonical tally glyph: hidden native 正 is the ONLY sizing element
+ * (real advance width, line box, baseline from the current editor font).
+ * The canonical SVG strokes overlay the same grid cell and must never
+ * contribute intrinsic sizing: SVG default 300x150 intrinsic dimensions
+ * are suppressed via contain:size + min-zero + overflow clipping, so the
+ * grid track is decided by the native 正 alone. No fixed 1em frame.
+ */
+export function buildVectorGlyph(shownStrokes: number, typo: ZhengTypography): HTMLElement {
+  const clamped = Math.max(0, Math.min(ZHENG_STROKES.length, Math.floor(shownStrokes)));
+  const cell = document.createElement('span');
+  cell.className = 'zt-glyph';
+  cell.setAttribute('data-strokes', String(clamped));
+  cell.style.cssText = `
+    display: inline-grid;
+    grid-template-areas: "cell";
+    line-height: 1;
+    background: transparent;
+  `;
+  applyTypography(cell, typo);
+
+  const native = document.createElement('span');
+  native.className = 'zt-native zt-native-sizing';
+  native.setAttribute('aria-hidden', 'true');
+  native.textContent = '正';
+  native.style.cssText = `
+    grid-area: cell;
+    visibility: hidden;
+    line-height: inherit;
+  `;
+  applyTypography(native, typo);
+
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', 'zt-svg zt-vector');
+  svg.setAttribute('viewBox', ZHENG_VIEWBOX);
+  svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+  svg.setAttribute('aria-hidden', 'true');
+  (svg as unknown as HTMLElement).style.cssText = `
+    grid-area: cell;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    display: block;
+    overflow: hidden;
+    contain: size layout;
+    background: transparent;
+    align-self: stretch;
+    justify-self: stretch;
+  `;
+  const group = document.createElementNS(SVG_NS, 'g');
+  group.setAttribute('transform', ZHENG_FLIP_TRANSFORM);
+  group.setAttribute('fill', 'currentColor');
+  for (let i = 0; i < clamped; i++) {
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('d', ZHENG_STROKES[i]);
+    path.setAttribute('data-stroke', String(i + 1));
+    group.appendChild(path);
+  }
+  svg.appendChild(group);
+  cell.appendChild(native);
+  cell.appendChild(svg);
+  return cell;
 }
 
-function rasterizeZhengAlpha(
+function buildEllipsis(typo: ZhengTypography): HTMLElement {
+  const el = document.createElement('span');
+  el.className = 'zt-ellipsis';
+  el.textContent = '…';
+  el.style.cssText = `
+    background: transparent;
+    opacity: 0.6;
+  `;
+  applyTypography(el, typo);
+  return el;
+}
+
+function buildTotalCount(count: number, typo: ZhengTypography): HTMLElement {
+  const el = document.createElement('span');
+  el.className = 'zt-total';
+  el.textContent = String(count);
+  applyTypography(el, typo);
+  el.style.fontSize = '0.75em';
+  el.style.opacity = '0.65';
+  el.style.fontVariantNumeric = 'tabular-nums';
+  el.style.background = 'transparent';
+  return el;
+}
+
+function appendGlyph(
+  container: HTMLElement,
+  shownStrokes: number,
+  full: boolean,
+  index: number,
   typo: ZhengTypography,
-): { width: number; height: number; alpha: Uint8Array } | null {
-  try {
-    const cssSizePx = parseCssSize(typo.fontSize);
-    const dpr = typo.devicePixelRatio > 0 ? typo.devicePixelRatio : 1;
-    const { width, height } = computeBackingSize(cssSizePx, dpr);
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    let ctx: CanvasRenderingContext2D | null = null;
-    try {
-      ctx = canvas.getContext('2d');
-    } catch {
-      return null;
-    }
-    if (!ctx) return null;
-    ctx.clearRect(0, 0, width, height);
-    try {
-      ctx.save();
-      ctx.scale(dpr, dpr);
-      ctx.font = `${typo.fontStyle} ${typo.fontWeight} ${cssSizePx}px ${typo.fontFamily}`;
-      ctx.textBaseline = 'top';
-      ctx.textAlign = 'left';
-      ctx.fillStyle = 'rgb(0, 0, 0)';
-      ctx.fillText(FULL_GLYPH, 0, 0);
-      ctx.restore();
-    } catch {
-      return null;
-    }
-    let imageData: ImageData;
-    try {
-      imageData = ctx.getImageData(0, 0, width, height);
-    } catch {
-      return null;
-    }
-    const alpha = new Uint8Array(width * height);
-    let ink = 0;
-    for (let i = 0; i < width * height; i++) {
-      const a = imageData.data[i * 4 + 3];
-      alpha[i] = a;
-      if (a > 0) ink++;
-    }
-    if (ink === 0) return null;
-    return { width, height, alpha };
-  } catch {
-    return null;
-  }
-}
-
-function buildGlyphCache(typo: ZhengTypography): GlyphCacheEntry | null {
-  const key = buildMaskCacheKey(typo);
-  const raster = rasterizeZhengAlpha(typo);
-  if (!raster) return null;
-  const res = analyzeZhengMasks(raster.alpha, raster.width, raster.height);
-  if (!res.valid || !res.masks) return null;
-  return { key, width: raster.width, height: raster.height, alpha: raster.alpha, masks: res.masks };
-}
-
-function compositeStateToCanvas(
-  entry: GlyphCacheEntry,
-  state: number,
-  color: string,
-): HTMLCanvasElement | null {
-  try {
-    if (state < 1 || state > 5) return null;
-    const mask = entry.masks[state - 1];
-    if (!mask) return null;
-    const rgb = parseCssColor(color);
-    if (!rgb) return null;
-    const rgba = recolorWithMask(entry.alpha, mask, rgb, entry.width, entry.height);
-    const canvas = document.createElement('canvas');
-    canvas.width = entry.width;
-    canvas.height = entry.height;
-    canvas.setAttribute('data-zheng-state', String(state));
-    let ctx: CanvasRenderingContext2D | null = null;
-    try {
-      ctx = canvas.getContext('2d');
-    } catch {
-      return null;
-    }
-    if (!ctx) return null;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const imageData = new ImageData(Uint8ClampedArray.from(rgba), entry.width, entry.height);
-    ctx.putImageData(imageData, 0, 0);
-    canvas.style.cssText = `
-      display: inline-block;
-      width: 1em;
-      height: 1em;
-      vertical-align: text-bottom;
-      background: transparent;
-    `;
-    return canvas;
-  } catch {
-    return null;
-  }
-}
-
-function createFallbackSpan(state: number, typo: ZhengTypography): HTMLElement {
+): void {
   const span = document.createElement('span');
-  span.textContent = `[${state}]`;
-  span.style.opacity = '0.6';
+  span.className = 'zt-tally';
+  if (full) span.setAttribute('data-full', 'true');
+  span.setAttribute('data-state', full ? '5' : String(shownStrokes));
+  span.setAttribute('data-index', String(index));
+  span.style.cssText = `
+    display: inline-flex;
+    align-items: center;
+    background: transparent;
+  `;
   applyTypography(span, typo);
   span.style.background = 'transparent';
-  span.setAttribute('data-fallback', String(state));
-  return span;
-}
-
-function renderCountInto(
-  tallyContainer: HTMLElement,
-  countDisplay: HTMLElement,
-  count: number,
-  typo: ZhengTypography,
-  entry: GlyphCacheEntry | null,
-): void {
-  tallyContainer.innerHTML = '';
-  const q = Math.floor(count / 5);
-  const r = count % 5;
-  for (let i = 0; i < q; i++) {
-    const span = document.createElement('span');
-    span.setAttribute('data-full', 'true');
-    span.setAttribute('data-state', '5');
-    span.style.cssText = `
-      display: inline-flex;
-      align-items: center;
-      background: transparent;
-    `;
-    applyTypography(span, typo);
-    span.style.background = 'transparent';
-    if (entry) {
-      const canvas = compositeStateToCanvas(entry, 5, typo.color);
-      if (canvas) span.appendChild(canvas);
-      else span.textContent = FULL_GLYPH;
-    } else {
-      span.textContent = FULL_GLYPH;
-    }
-    tallyContainer.appendChild(span);
-  }
-  if (r > 0) {
-    const span = document.createElement('span');
-    span.setAttribute('data-state', String(r));
-    span.style.cssText = `
-      display: inline-flex;
-      align-items: center;
-      background: transparent;
-    `;
-    applyTypography(span, typo);
-    span.style.background = 'transparent';
-    if (entry) {
-      const canvas = compositeStateToCanvas(entry, r, typo.color);
-      if (canvas) span.appendChild(canvas);
-      else span.appendChild(createFallbackSpan(r, typo));
-    } else {
-      span.appendChild(createFallbackSpan(r, typo));
-    }
-    tallyContainer.appendChild(span);
-  }
-  try {
-    applyTypography(countDisplay, typo);
-  } catch {
-    // Never break session on typography refresh.
-  }
-  countDisplay.textContent = String(count);
+  span.appendChild(buildVectorGlyph(shownStrokes, typo));
+  container.appendChild(span);
 }
 
 /**
- * Inline tally widget anchored inside the CM6 editor DOM (normal path).
- * Not position:fixed; lives at the cursor line as a transient chip.
+ * True inline chip for CM6 Decoration.widget. Participates in editor layout
+ * (inline-flex, no absolute/fixed, no editor-root style changes).
+ *
+ * Up to 4 group slots render fully (each +1 visibly adds a stroke).
+ * Beyond that the preview compacts to two leading fulls, an ellipsis, the
+ * most-recent completed full, and the current partial slot — the in-progress
+ * group is always visible. The transient preview never alters
+ * the real integer count; commit format is unchanged.
+ *
+ * mode 'active': live tally session chip (strong chrome, total always shown).
+ * mode 'persisted': committed-tally chip reusing the same glyph pipeline and
+ * box metrics; chrome is quieter and the total is hidden by default via
+ * visibility (space reserved, so revealing it never shifts layout).
  */
-export function createInlineTallyRenderer(host: ResolvedEditorHost): InlineTallyRenderer {
-  const initialTypo = host.typography;
-  let clickCallback: (() => void) | null = null;
-  let glyphCache: GlyphCacheEntry | null = null;
-  let glyphCacheFailed = false;
-  let prevHostPosition = '';
+export type TallyChipMode = 'active' | 'persisted';
 
-  const root = document.createElement('span');
-  root.className = 'zheng-tally-inline';
-  root.setAttribute('data-inline-widget', 'true');
-
-  function ensurePositionContext(): void {
-    try {
-      const cs = getComputedStyle(host.dom);
-      prevHostPosition = host.dom.style.position || '';
-      if (!cs || cs.position === 'static') {
-        host.dom.style.position = 'relative';
-      }
-    } catch {
-      // Positioning context is best-effort; widget still renders inline.
-    }
-  }
-
-  function restorePositionContext(): void {
-    try {
-      host.dom.style.position = prevHostPosition;
-    } catch {
-      // Ignore restore failures during teardown.
-    }
-  }
-
-  function placeAtCursor(): void {
-    try {
-      const domRect = host.dom.getBoundingClientRect();
-      const left = host.coords.left - domRect.left;
-      const top = host.coords.bottom - domRect.top + 4;
-      root.style.left = `${Math.max(0, left)}px`;
-      root.style.top = `${Math.max(0, top)}px`;
-    } catch {
-      root.style.left = '0px';
-      root.style.top = '1.2em';
-    }
-  }
-
+export function buildTallyChip(
+  count: number,
+  typo: ZhengTypography,
+  onClick: (() => void) | null,
+  mode: TallyChipMode = 'active',
+  showTotal = true,
+): HTMLElement {
+  const safe = Math.max(0, Math.floor(count));
+  const persisted = mode === 'persisted';
   const chip = document.createElement('span');
+  chip.className = 'zheng-tally-inline';
+  chip.setAttribute('data-inline-widget', 'true');
+  chip.setAttribute('data-count', String(safe));
+  chip.setAttribute('data-mode', mode);
   chip.style.cssText = `
     display: inline-flex;
     align-items: center;
     gap: 0.35em;
-    padding: 0.15em 0.4em;
-    background: var(--background-secondary);
-    border: 1px solid var(--background-modifier-border);
+    padding: 0.1em 0.35em;
+    margin: 0 0.15em;
+    background: ${persisted ? 'transparent' : 'var(--background-secondary)'};
+    border: 1px ${persisted ? 'dashed' : 'solid'} var(--background-modifier-border);
     border-radius: 4px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
     white-space: nowrap;
     vertical-align: text-bottom;
   `;
-  applyTypography(chip, initialTypo);
+  applyTypography(chip, typo);
 
-  const tallyContainer = document.createElement('span');
-  tallyContainer.style.cssText = `
+  const preview = document.createElement('span');
+  preview.className = 'zt-preview';
+  preview.style.cssText = `
     display: inline-flex;
     gap: 0.15em;
     line-height: 1;
     background: transparent;
   `;
-  applyTypography(tallyContainer, initialTypo);
+  applyTypography(preview, typo);
 
-  const countDisplay = document.createElement('span');
-  countDisplay.style.cssText = `
-    font-size: 0.75em;
-    opacity: 0.7;
-    font-variant-numeric: tabular-nums;
-    background: transparent;
-  `;
-  applyTypography(countDisplay, initialTypo);
-
-  chip.appendChild(tallyContainer);
-  chip.appendChild(countDisplay);
-  root.appendChild(chip);
-
-  root.style.cssText += `
-    position: absolute;
-    z-index: 50;
-    pointer-events: auto;
-    background: transparent;
-  `;
-
-  chip.addEventListener('click', () => {
-    if (clickCallback) clickCallback();
-  });
-
-  function ensureGlyphCache(typo: ZhengTypography): GlyphCacheEntry | null {
-    const key = buildMaskCacheKey(typo);
-    if (glyphCache && glyphCache.key === key) return glyphCache;
-    const fresh = buildGlyphCache(typo);
-    if (fresh) {
-      glyphCache = fresh;
-      glyphCacheFailed = false;
-      return glyphCache;
-    }
-    if (!glyphCache || glyphCache.key !== key) {
-      glyphCache = null;
-      glyphCacheFailed = true;
-    }
-    void glyphCacheFailed;
-    return null;
+  const q = Math.floor(safe / 5);
+  const r = safe % 5;
+  // Group slots: every completed group of five plus the current partial one.
+  // Up to 4 slots render fully so each +1 visibly adds a stroke; beyond that
+  // the preview compacts but ALWAYS keeps the most-recent completed group
+  // and the current partial slot — the in-progress group never vanishes.
+  const groups = q + (r > 0 ? 1 : 0);
+  if (groups <= 4) {
+    for (let i = 0; i < q; i++) appendGlyph(preview, 5, true, i, typo);
+    if (r > 0) appendGlyph(preview, r, false, q, typo);
+  } else {
+    appendGlyph(preview, 5, true, 0, typo);
+    appendGlyph(preview, 5, true, 1, typo);
+    preview.appendChild(buildEllipsis(typo));
+    appendGlyph(preview, 5, true, q - 1, typo);
+    if (r > 0) appendGlyph(preview, r, false, q, typo);
   }
-
-  function currentTypo(): ZhengTypography {
-    try {
-      const fresh = readHostTypography(host.dom);
-      if (fresh && fresh.fontFamily && fresh.fontSize && fresh.color) return fresh;
-    } catch {
-      // Fall through to initial.
-    }
-    return initialTypo;
+  chip.appendChild(preview);
+  const totalEl = buildTotalCount(safe, typo);
+  if (persisted && !showTotal) totalEl.style.visibility = 'hidden';
+  chip.appendChild(totalEl);
+  if (onClick) {
+    chip.addEventListener('click', () => {
+      onClick();
+    });
   }
-
-  function render(count: number): void {
-    const typo = currentTypo();
-    const entry = ensureGlyphCache(typo);
-    renderCountInto(tallyContainer, countDisplay, count, typo, entry);
-  }
-
-  ensurePositionContext();
-  placeAtCursor();
-
-  return {
-    get element() {
-      return root;
-    },
-    get isFallback() {
-      return false;
-    },
-    update(count: number) {
-      render(count);
-    },
-    onClick(callback: () => void) {
-      clickCallback = callback;
-    },
-    destroy() {
-      try {
-        if (root.parentNode) root.parentNode.removeChild(root);
-      } catch {
-        // Ignore teardown races.
-      }
-      restorePositionContext();
-      glyphCache = null;
-      clickCallback = null;
-    },
-  };
+  return chip;
 }
 
 /**
- * Explicit fixed-overlay fallback only. Normal path must use inline widget.
+ * Explicit fallback chip (text only) for catastrophic paths such as an
+ * unreadable host typography. Never used on the normal vector path; marked
+ * so tests and smoke checks can tell it apart.
+ */
+export function buildFallbackChip(count: number, typo: ZhengTypography): HTMLElement {
+  const safe = Math.max(0, Math.floor(count));
+  const chip = document.createElement('span');
+  chip.className = 'zheng-tally-inline';
+  chip.setAttribute('data-inline-widget', 'true');
+  chip.setAttribute('data-fallback', 'text');
+  chip.setAttribute('data-count', String(safe));
+  chip.style.cssText = `
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35em;
+    padding: 0.1em 0.35em;
+    margin: 0 0.15em;
+    background: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    white-space: nowrap;
+    vertical-align: text-bottom;
+  `;
+  applyTypography(chip, typo);
+  chip.textContent = `[${safe}]`;
+  return chip;
+}
+
+/**
+ * Explicit fixed-overlay fallback only. Normal path must use Decoration widget.
  * Marked with data-fallback-mode="fixed" so tests and smoke checks can tell.
  */
 export function createFallbackOverlayRenderer(typo: ZhengTypography): InlineTallyRenderer {
@@ -418,29 +307,14 @@ export function createFallbackOverlayRenderer(typo: ZhengTypography): InlineTall
     white-space: nowrap;
   `;
   applyTypography(inner, typo);
-  const tallyContainer = document.createElement('span');
-  tallyContainer.style.cssText = `
-    display: inline-flex;
-    gap: 0.15em;
-    line-height: 1;
-    background: transparent;
-  `;
-  applyTypography(tallyContainer, typo);
-  const countDisplay = document.createElement('span');
-  countDisplay.style.cssText = `
-    font-size: 0.75em;
-    opacity: 0.7;
-    font-variant-numeric: tabular-nums;
-    background: transparent;
-  `;
-  applyTypography(countDisplay, typo);
-  inner.appendChild(tallyContainer);
-  inner.appendChild(countDisplay);
+  const label = document.createElement('span');
+  label.textContent = '[tally]';
+  applyTypography(label, typo);
+  inner.appendChild(label);
   root.appendChild(inner);
   inner.addEventListener('click', () => {
     if (clickCallback) clickCallback();
   });
-  renderCountInto(tallyContainer, countDisplay, 0, typo, null);
   return {
     get element() {
       return root;
@@ -448,8 +322,8 @@ export function createFallbackOverlayRenderer(typo: ZhengTypography): InlineTall
     get isFallback() {
       return true;
     },
-    update(count: number) {
-      renderCountInto(tallyContainer, countDisplay, count, typo, null);
+    update(_count: number) {
+      // Fallback carries no progressive preview.
     },
     onClick(callback: () => void) {
       clickCallback = callback;
