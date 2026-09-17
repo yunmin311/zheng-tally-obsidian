@@ -106,13 +106,21 @@ describe('persistent-tally: persisted chip reuses canonical vectors', () => {
     expect(el.querySelector('[data-state="2"]')).not.toBeNull();
   });
 
-  test('count 18 persisted keeps canonical compact vectors (never text)', () => {
+  test('count 18 persisted shows full groups plus state 3 (never text)', () => {
     const el = persistedChip(18);
-    expect(el.querySelectorAll('[data-full="true"]').length).toBe(2);
-    expect(el.querySelector('.zt-ellipsis')).not.toBeNull();
+    expect(el.querySelectorAll('[data-full="true"]').length).toBe(3);
+    expect(el.querySelector('.zt-ellipsis')).toBeNull();
     expect(el.querySelector('[data-state="3"]')).not.toBeNull();
     expect(el.querySelector('.zt-total')?.textContent).toBe('18');
     expect(el.textContent).not.toContain('正正正·3');
+  });
+
+  test('count 23 persisted compacts but keeps current group', () => {
+    const el = persistedChip(23);
+    expect(el.querySelectorAll('[data-full="true"]').length).toBe(3);
+    expect(el.querySelector('.zt-ellipsis')).not.toBeNull();
+    expect(el.querySelector('[data-state="3"]')).not.toBeNull();
+    expect(el.querySelector('.zt-total')?.textContent).toBe('23');
   });
 
   test('no visible ·3 remainder inside persisted widget', () => {
@@ -152,6 +160,23 @@ describe('persistent-tally: resume lookup', () => {
     const doc = 'a 正正正·3<!--zt:18--> b';
     const hit = findResumeToken(doc, 4);
     expect(hit).toEqual({ from: 2, to: 19, count: 18, legacy: false });
+  });
+
+  test('adjacent marked tallies fail closed instead of guessing', () => {
+    const doc = '正正<!--zt:10-->正正<!--zt:10-->';
+    // Caret exactly between the two tokens touches both ranges.
+    expect(findResumeToken(doc, 14)).toBeNull();
+    // Caret strictly inside one token still resumes it.
+    expect(findResumeToken(doc, 5)).toEqual({ from: 0, to: 14, count: 10, legacy: false });
+    expect(findResumeToken(doc, 20)).toEqual({ from: 14, to: 28, count: 10, legacy: false });
+    // Far outside both tokens resumes nothing.
+    expect(findResumeToken('xx 正正<!--zt:10-->正正<!--zt:10--> xx', 0)).toBeNull();
+  });
+
+  test('single tally adjacent caret resumes normally', () => {
+    const doc = 'AA 正正<!--zt:10--> BB';
+    expect(findResumeToken(doc, 2)).toEqual({ from: 3, to: 17, count: 10, legacy: false });
+    expect(findResumeToken(doc, 18)).toEqual({ from: 3, to: 17, count: 10, legacy: false });
   });
 });
 

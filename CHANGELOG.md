@@ -7,9 +7,13 @@
 - True CodeMirror 6 inline widget — the counter lives inside the text flow
 - Keyboard controls: `Alt+Z` start, `Space`/`+` count up, `Backspace`/`-`
   count down, `Enter` commits, `Esc` cancels with zero writes
-- Stable Markdown commit (`正正正·3` for 18); the live total is never written
-- Compact large-count preview above 15 (`正正…正 83`) with exact live total
-- Hover/caret count badge for committed tallies: transient anchored overlay,
+- Stable Markdown commit with marker-backed integer SOT
+  (`正正正·3<!--zt:18-->` for 18); visible text stays readable without the plugin
+- Persistent resumable tally objects: vector chips survive note reopens,
+  plugin reloads, and Obsidian restarts; click or caret + `Alt+Z` resumes
+- Compact large-count preview that never drops the in-progress group
+  (up to 4 slots full, then leading fulls + most-recent full + partial)
+- Hover/caret count badge for legacy tallies: transient anchored overlay,
   conservative boundary detection, no layout shift, no document edits
 - Font-aware sizing and baseline via a hidden native `正` measurement;
   strokes follow `currentColor` across themes
