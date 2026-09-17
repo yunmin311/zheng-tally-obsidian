@@ -70,7 +70,10 @@ function isTallyControlKey(e: KeyboardEvent): boolean {
 }
 
 export function createEditorSession(deps: SessionDependencies): EditorSession {
-  const { editor, view, leaf, workspace, settings, onSessionEnd, resume } = deps;
+  // Note: `deps.settings` is intentionally not consumed here. V1 commits the
+  // canonical marker-backed format unconditionally; historical stored
+  // preferences migrate in settings.loadSettings.
+  const { editor, view, leaf, workspace, onSessionEnd, resume } = deps;
   let state: TallyState | null = null;
   let cmView: EditorView | null = null;
   let hostDom: HTMLElement | null = null;
@@ -80,6 +83,7 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
   let anchorOffset: number | null = null;
   let capturedCursor: EditorPosition | null = null;
   let resumeRange: { from: number; to: number } | null = null;
+  let resumeDocSnapshot: string | null = null;
   let suppressActive = false;
 
   const component = new (class extends Component {
@@ -178,6 +182,7 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
     anchorOffset = null;
     capturedCursor = null;
     resumeRange = null;
+    resumeDocSnapshot = null;
     onSessionEnd();
   }
 
@@ -202,6 +207,18 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
       // Resume path: exactly one document transaction replaces the whole
       // stable text + marker (or deletes both when the count reaches zero).
       // The persistent decoration returns on suppress release below.
+      // Safety gate: any external document change since resume start cancels
+      // the session instead of blindly replacing stale offsets. The marked
+      // tally then re-parses from the current document; nothing is rewritten.
+      try {
+        if (resumeDocSnapshot !== null && viewForAnchor.state.doc.toString() !== resumeDocSnapshot) {
+          cleanup();
+          return;
+        }
+      } catch {
+        cleanup();
+        return;
+      }
       const marked = toMarkedText(state.count);
       try {
         const fromPos = editor.offsetToPos(resumeRange.from);
@@ -213,7 +230,10 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
       cleanup();
       return;
     }
-    const text = settings.commitFormat === 'unicode' ? state.toUnicodeText() : toMarkedText(state.count);
+        // V1 canonical storage: every production Enter commit is marker-backed
+        // stable format. The experimental Unicode commit option is retired; the
+        // Unicode serializer on TallyState remains for tests/future use only.
+    const text = toMarkedText(state.count);
     if (text) {
       try {
         let pos = capturedCursor;
@@ -382,6 +402,17 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
       } catch {
         cleanup();
         return false;
+      }
+
+      if (resumeRange && cmView) {
+        // Snapshot after setup (setup performs zero document writes): any
+        // later external change cancels resume commit instead of replacing
+        // stale offsets.
+        try {
+          resumeDocSnapshot = cmView.state.doc.toString();
+        } catch {
+          resumeDocSnapshot = null;
+        }
       }
 
       isActive = true;

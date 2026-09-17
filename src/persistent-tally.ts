@@ -1,4 +1,4 @@
-import { StateEffect, StateField, type EditorState, type Extension } from '@codemirror/state';
+import { StateEffect, StateField, type EditorState, type Extension, type Range } from '@codemirror/state';
 import { Decoration, EditorView, WidgetType, type DecorationSet } from '@codemirror/view';
 import { parseMarkedTallies, type MarkedTally } from './tally-state';
 import { parseStableTokens } from './tally-hover';
@@ -190,12 +190,22 @@ export function createPersistentTallyField(
     } catch {
       suppress = null;
     }
-    const tokens = collectPersistedTokens(state, suppress);
-    const ranges = tokens.map((t) =>
-      Decoration.replace({
-        widget: new PersistentTallyWidget(t, selectionTouches(state, t.from, t.to), onResume),
-      }).range(t.from, t.to),
-    );
+    // Verified marked tokens only. A range owned by an active resume session
+    // still gets a source-hiding replace (no widget): the raw Markdown stays
+    // in the document model with zero writes, but disappears from visible
+    // DOM while the active tally widget renders at the same anchor.
+    const ranges: Range<Decoration>[] = [];
+    for (const t of parseMarkedTallies(state.doc.toString(), 0)) {
+      if (suppress && t.from < suppress.to && suppress.from < t.to) {
+        ranges.push(Decoration.replace({}).range(t.from, t.to));
+        continue;
+      }
+      ranges.push(
+        Decoration.replace({
+          widget: new PersistentTallyWidget(t, selectionTouches(state, t.from, t.to), onResume),
+        }).range(t.from, t.to),
+      );
+    }
     return Decoration.set(ranges, true);
   };
   return StateField.define<DecorationSet>({
