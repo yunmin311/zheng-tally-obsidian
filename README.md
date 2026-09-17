@@ -1,60 +1,54 @@
-# Zheng Tally for Obsidian
+# Zheng Tally
 
-Chinese 正-character tally counting in the Obsidian Markdown editor (desktop).
+> A native-feeling 正 tally counter for Obsidian.
+> Count stroke by stroke, keep it inline, and resume anytime.
 
-Press `Alt+Z`, tap `Space` to count, `Enter` to commit. The tally stays a
-live canonical `正` vector in your note — never degrading into plain text —
-and can be resumed later with a click or `Alt+Z`.
+[![Release](https://img.shields.io/github/v/release/yunmin311/zheng-tally-obsidian)](https://github.com/yunmin311/zheng-tally-obsidian/releases)
+[![CI](https://github.com/yunmin311/zheng-tally-obsidian/actions/workflows/ci.yml/badge.svg)](https://github.com/yunmin311/zheng-tally-obsidian/actions/workflows/ci.yml)
+![Obsidian desktop](https://img.shields.io/badge/Obsidian-desktop-7f6df2)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+![Zheng Tally demo](docs/images/zheng-tally-demo.gif)
+
+Press `Alt+Z`, tap `Space` to count, `Enter` to commit. The tally renders as a
+real inline `正` built from canonical stroke vectors — and it stays that way:
+committed tallies remain vector chips you can click to resume.
+
+## Why Zheng Tally
+
+Counting with 正 tallies in Markdown usually means typing characters by hand
+and losing count halfway. Zheng Tally turns it into a tight loop: start
+anywhere in a note, watch each stroke appear, commit a portable plain-text
+tally, and pick it back up later without retyping. The editor shows vectors;
+the file stays readable text.
+
+## How it works
+
+1. `Alt+Z` drops an inline counter at the cursor.
+2. Each `Space` adds one canonical stroke (`一` → … → `正`), grouped in fives.
+3. `Enter` writes `正正正·3<!--zt:18-->` — visible text plus a count marker.
+4. The note keeps showing a vector chip, derived from that text on every load.
+5. Click the chip (or caret + `Alt+Z`) to resume from 18. `Esc` never writes.
 
 ## Features
 
-- True CodeMirror 6 inline widget — the counter sits inside the text flow
-- Canonical 5-stroke `正` vector preview, progressive 1 → 5
-- Font-aware sizing and baseline via a hidden native `正` measurement
-- Persistent resumable tally objects (`正正正·3<!--zt:18-->`) with restart recovery
-- Stable readable Markdown (visible text never depends on the plugin)
-- Large-count compact preview that never drops the in-progress group
-- Hover/caret count badge for legacy tallies (conservative detection)
-- Fail-closed sessions: `Esc` writes nothing, exceptions leave no residue
-
-## Screenshots
-
-All screenshots below are captured from real Obsidian smoke runs.
-
-Progressive strokes 1–5 (same canonical vector, per-state path counts):
-
-![Progressive tally states 1 to 5](docs/images/progressive-1-5.png)
-
-Inline counting between Chinese text (size/baseline match the surroundings):
-
-![Inline counting](docs/images/inline-counting.png)
-
-Large-count compact preview with exact total on the right:
-
-![Large-count compact preview](docs/images/large-count.png)
-
-Committed-tally hover badge (no layout shift, no document edit):
-
-![Hover count badge](docs/images/count-badge.png)
-
-Persisted tally chip after `Enter` (same vectors, quieter chrome):
-
-![Persisted tally](docs/images/persisted-tally.png)
-
-Resumed tally back in counting mode (click the chip, or caret + `Alt+Z`):
-
-![Resumed tally](docs/images/resumed-tally.png)
+- Canonical 5-stroke `正` vectors at every step — never a substituted character
+- True inline widget with font-matched size and baseline
+- Persistent, resumable tally objects with restart-safe recovery
+- Readable storage: notes stay meaningful with the plugin off
+- Compact large-count preview that never drops the in-progress group
+- Conservative hover/count badge for legacy tallies, zero layout shift
 
 ## Installation
 
-### From release (recommended)
+From a release:
 
 1. Download `main.js` and `manifest.json` from
-   [Releases](https://github.com/yunmin311/zheng-tally-obsidian/releases)
-2. Place them in `<vault>/.obsidian/plugins/zheng-tally/`
-3. Enable the plugin in Settings → Community plugins
+   [Releases](https://github.com/yunmin311/zheng-tally-obsidian/releases).
+2. Place both in `<vault>/.obsidian/plugins/zheng-tally/`.
+3. Enable the plugin under Settings → Community plugins.
 
-### From source
+From source:
 
 ```bash
 git clone https://github.com/yunmin311/zheng-tally-obsidian.git
@@ -63,136 +57,100 @@ npm install
 npm run build
 ```
 
-Copy `dist/main.js` and `dist/manifest.json` to your vault's plugin folder.
-No `styles.css` is needed (the plugin ships none).
+Copy `dist/main.js` and `dist/manifest.json` into your vault's plugin folder.
+No `styles.css` is shipped or needed.
 
 ## Usage
 
-1. Open a Markdown note in Obsidian desktop
-2. Press `Alt+Z` (`Start Zheng Tally counting`) to enter tally mode
-3. Press `Space` (or `+`) to count up, `Backspace` (or `-`) to count down
-4. Press `Enter` to commit — the tally stays a persistent vector chip
-5. Click the chip (or caret + `Alt+Z`) to resume counting from its total
-6. Press `Esc` to cancel without writing anything
+1. Open a Markdown note (Obsidian desktop).
+2. `Alt+Z` to start tally mode at the cursor.
+3. `Space` / `+` to count up, `Backspace` / `-` to count down.
+4. `Enter` to commit a persistent vector chip.
+5. Click the chip (or caret + `Alt+Z`) to resume; `Esc` cancels cleanly.
 
-Only one tally session is active at a time. Switching leaves ends the session
-without writing.
+One session at a time; switching leaves ends it without writing.
 
-## Keyboard controls
+## Keyboard shortcuts
 
 | Key | Action |
 |-----|--------|
-| `Alt+Z` | Start tally session |
+| `Alt+Z` | Start, or resume the tally under the caret |
 | `Space` / `+` / `NumpadAdd` / `Shift+=` | +1 |
 | `Backspace` / `-` / `_` / `NumpadSubtract` | −1 (floors at 0) |
-| `Enter` | Commit stable Markdown, single edit |
+| `Enter` | Commit (single edit) |
 | `Esc` | Cancel, zero document changes |
 
-`Ctrl`/`Alt`/`Meta` combinations pass through and keep the session alive.
+`Ctrl`/`Alt`/`Meta` chords pass through untouched.
 
-## Stable Markdown format
+## Persistent & resumable tallies
 
-`Enter` writes readable plain text plus a plugin ownership marker carrying the
-integer source of truth:
+Committed tallies keep rendering as vector chips — same strokes, same metrics,
+quieter chrome — across note reopens, plugin reloads, and restarts, derived
+purely from the note text.
 
-| Count | Stored text |
-|-------|-------------|
-| 0 | *(nothing — `Esc` instead; resuming to 0 deletes the tally)* |
+- **Resume** from the stored total (18 → 19), never from zero.
+- **Resume + `Enter`** rewrites text + marker in one edit
+  (`正正正正·3<!--zt:23-->`).
+- **Resume + `Esc`** changes nothing; the original chip returns.
+- **Resume to 0 + `Enter`** removes the tally and its marker.
+- **Ambiguous caret** between two adjacent tallies resumes neither.
+- The persisted total stays hidden until hover or caret reaches the chip,
+  reserving its space so nothing shifts.
+
+![Persisted tally](docs/images/persisted-tally.png)
+
+![Resumed tally](docs/images/resumed-tally.png)
+
+## Storage format
+
+| Count | Stored |
+|-------|--------|
 | 1 | `·1<!--zt:1-->` |
-| 4 | `·4<!--zt:4-->` |
 | 5 | `正<!--zt:5-->` |
-| 7 | `正·2<!--zt:7-->` |
 | 18 | `正正正·3<!--zt:18-->` |
 
-General rule: `floor(count/5)` copies of `正`, plus `·N` for a non-zero
-remainder, plus `<!--zt:count-->`. The visible text never depends on the
-plugin — with the plugin disabled, readers still see `正正正·3`. A marker is
-only honored when its count re-serializes to exactly the preceding visible
-text; mismatches fail closed (no widget, no rewrite).
+The `<!--zt:N-->` comment is the integer source of truth and ownership marker.
+A marker counts only when it re-serializes to exactly the visible text;
+mismatches fail closed. Unmarked legacy tallies (`正正正·3`) still get a
+conservative hover badge and can be resumed once, upgrading on next `Enter`.
+A lone `正` never auto-resumes.
 
-## Persistent resumable tally
+## Large-count behavior
 
-After `Enter`, the tally keeps rendering as a persistent vector chip — same
-canonical strokes, same box metrics, quieter chrome. It survives note
-reopens, plugin reloads, and Obsidian restarts (it re-derives from the
-Markdown every time; nothing is stored outside the note).
-
-- **Resume**: click the chip, or place the caret on/adjacent to it and press
-  `Alt+Z`. Counting restarts from the stored total (never from zero); the
-  chip temporarily becomes the active tally widget.
-- **Resume + `Enter`**: single edit rewrites text + marker
-  (18 → 23 gives `正正正正·3<!--zt:23-->`), then the persistent chip returns.
-- **Resume + `Esc`**: zero document changes, original chip restored.
-- **Resume to 0 + `Enter`**: deletes the whole stable text + marker.
-- **Ambiguity fails closed**: a caret touching two adjacent marked tallies
-  resumes neither; clicking a chip always names its own token.
-- **Persisted total**: hidden by default (space reserved, so no layout shift),
-  revealed on hover or when the caret/selection reaches the chip.
-- **Legacy upgrade**: an unmarked `正正正·3` under a conservative boundary can
-  be resumed with caret + `Alt+Z` and upgrades to marked form on next `Enter`.
-  A lone bare `正` never auto-resumes — only `正<!--zt:5-->` is reliable.
-
-## Large-count compact preview
-
-Up to 4 group slots render fully so every `+1` visibly adds a stroke. Beyond
-that the preview compacts but always keeps the most-recent completed group
-and the current partial slot:
+Up to four group slots render in full; beyond that the preview compacts while
+always keeping the most-recent finished group and the live partial slot:
 
 ```text
-18 -> 正 正 正 [state3] 18
-20 -> 正 正 正 正 20
-21 -> 正 正 … 正 [state1] 21
-83 -> 正 正 … 正 [state3] 83
+18 -> 正 正 正 [state3]
+20 -> 正 正 正 正
+21 -> 正 正 … 正 [state1]
+83 -> 正 正 … 正 [state3]
 ```
 
-The right-hand total (`zt-total`, `0.75em`, dimmed, tabular numerals) is always
-the exact live count. Active and persisted chips share the same grouping
-algorithm, so `Enter` never visually jumps.
+The right-hand total is always exact. Active and persisted chips share one
+grouping algorithm, so committing never jumps visually.
 
-## Hover/caret count badge
+![Progressive strokes](docs/images/progressive-1-5.png)
 
-Moving the mouse over, or placing the caret inside, a legacy unmarked tally
-token shows its numeric count (e.g. `正正正·3` → `18`). Marked tallies render
-their own persistent chip instead, so the badge never duplicates them. The
-badge is a transient anchored overlay: it is hidden by default, never edits
-the Markdown, adds no metadata, and never shifts surrounding text.
+![Large count](docs/images/large-count.png)
 
-Detection is deliberately conservative (heuristic): a token only counts at a
-hard boundary (document start/end, whitespace, punctuation, symbols). Matches
-inside ordinary Han/Latin/digit runs never badge — `正正好`, `正正方方`,
-`测试正正内容` and `第·3项` stay silent. A lone `正` (count 5) is never badged
-either, since it is indistinguishable from ordinary Chinese prose. This is an
-explicit design limitation, not something heuristics should override.
+## Architecture
 
-## Canonical 5-stroke vector architecture
+- `src/zheng-strokes.ts` — vendored canonical 5-stroke vectors (Arphic data)
+- `src/renderer.ts` — native-measured glyph cells + tally chips
+- `src/cm6-widget.ts` — live inline `Decoration.widget`
+- `src/persistent-tally.ts` — marker replace decorations + resume lookup
+- `src/editor-session.ts` — keyboard capture, lifecycle, single-edit commits
+- `src/tally-hover.ts` — legacy parser + transient count badge
+- `src/tally-state.ts` — counts plus stable/marked serialization
+- `src/editor-host.ts` — the single CodeMirror access point
 
-The preview is built from one vendored 5-stroke vector source for `正`
-(Hanzi Writer Data, derived from Make Me a Hanzi / Arphic fonts — see
-[License](#license)). Canonical stroke order 横 / 竖 / 横 / 竖 / 横 is preserved;
-state *N* renders exactly the first *N* paths. No rasterization, no canvas
-masks, no per-font stroke guessing, no network requests at runtime.
+## Compatibility / limitations
 
-## Typography / native sizing
-
-Each tally glyph pairs two layers in the same grid cell:
-
-- a hidden native `正` span — the **only** sizing element, providing the real
-  advance width, line box and baseline from the current editor font
-  (family/size/weight/style/color are inherited);
-- the canonical SVG stroke overlay, which fills that cell with its own
-  intrinsic sizing suppressed (`contain: size`, zero minimums), so the
-  default 300×150 SVG box can never decide the layout.
-
-Strokes use `fill="currentColor"`, so light/dark themes recolor for free.
-
-## Limitations
-
-- **Obsidian desktop only** — no mobile support
-- **Single counter** — one active tally session at a time
-- **No history or statistics** — each session is independent
-- **Conservative badge** — lone `正` and in-word matches never badge (by design)
-- **Conservative ownership** — lone `正` without a marker never auto-resumes
-- Switching leaves cancels the session without writing
+- Obsidian desktop only; no mobile support.
+- One active session at a time; no history or statistics.
+- Detection stays conservative by design: in-word matches and lone `正`
+  never badge or resume.
 
 ## Development
 
@@ -200,29 +158,15 @@ Strokes use `fill="currentColor"`, so light/dark themes recolor for free.
 npm install       # install dependencies
 npm run dev       # watch mode build
 npm run build     # production build (dist/main.js + dist/manifest.json)
-npm test          # run tests (143 passing)
+npm test          # 143 passing
 npm run lint      # eslint
 npm run typecheck # tsc --noEmit
 ```
 
-## Architecture
+## License & data attribution
 
-- `src/zheng-strokes.ts` — canonical 5-stroke vectors for `正` (Arphic data, not MIT)
-- `src/renderer.ts` — native-sized vector glyph + tally chip DOM
-- `src/cm6-widget.ts` — true CM6 inline `Decoration.widget`
-- `src/editor-host.ts` — single sanctioned CodeMirror access point
-- `src/editor-session.ts` — keyboard capture, lifecycle, commit/cancel
-- `src/tally-hover.ts` — legacy-token parser + transient count badge
-- `src/persistent-tally.ts` — marked-token replace decorations, resume lookup
-- `src/tally-state.ts` — pure integer state, stable/marked serialization
-- `src/settings.ts` — legacy settings compatibility / migration
-- `src/main.ts` — plugin entry, command registration
-- `vendor/` — Arphic Public License + attribution notes
-
-## License
-
-- **Plugin source code: MIT** — see [LICENSE](LICENSE).
-- **Canonical `正` stroke vector data: Arphic Public License, NOT MIT** —
-  source Hanzi Writer Data / Make Me a Hanzi, extracted from Arphic Technology
-  fonts. Full data license: [vendor/ARPHICPL.txt](vendor/ARPHICPL.txt),
-  attribution notes: [vendor/README.md](vendor/README.md).
+- Plugin source code: **MIT** — see [LICENSE](LICENSE).
+- Canonical `正` stroke vectors: **Arphic Public License, not MIT** —
+  via Hanzi Writer Data / Make Me a Hanzi, extracted from Arphic Technology
+  fonts. Full text: [vendor/ARPHICPL.txt](vendor/ARPHICPL.txt), notes:
+  [vendor/README.md](vendor/README.md).
