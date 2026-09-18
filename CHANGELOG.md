@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.3
+
+- **Committed tallies now render in reading view.** Every other renderer in
+  the plugin works through CodeMirror decorations, which never reach Obsidian's
+  MarkdownRenderer — so in reading view a committed tally fell through as its
+  raw visible half (a stray `·3`, with the `<!--zt:N-->` marker invisible
+  because it is an HTML comment). A `registerMarkdownPostProcessor` pass now
+  renders the same vector chip there, reusing the existing parser, ownership
+  check and chip builder.
+  - Only marker-owned tallies are chipped: the marker must re-serialize to
+    exactly the visible text, otherwise nothing is rendered (fail closed).
+    Legacy bare `正正正·3` text is left untouched, as in the editor.
+  - Reading-view chips are read-only (`data-reading="true"`); counting stays an
+    editor action. Code blocks and already-rendered chips are skipped, so a
+    repeated post-processor pass cannot nest chips.
+- New module `src/reading-tally.ts`, 11 new tests (155 total).
+
 ## 1.0.2
 
 Community-directory review fixes — no change to tally behavior, persistence,
