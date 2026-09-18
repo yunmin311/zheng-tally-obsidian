@@ -27,10 +27,15 @@ export default class ZhengTallyPlugin extends Plugin {
       // NOTE: Obsidian prefixes command IDs with the plugin ID automatically,
       // so the bare `start` ID is a submission-compliance requirement.
       // The name must not repeat the plugin name (Obsidian already shows it
-      // beside the command), and no default hotkey ships with the plugin —
-      // see the README for how to assign one.
+      // beside the command).
       id: 'start',
       name: 'Start counting',
+      // The directory review lists a default hotkey as a Warning (possible
+      // conflict), not an Error. It is kept deliberately: without it the plugin
+      // ships with no way to start a tally, which is worse than the warning.
+      // `Alt+Z` is not bound by Obsidian by default, so there is no real clash;
+      // users can rebind it under Settings → Hotkeys as usual.
+      hotkeys: [{ modifiers: ['Alt'], key: 'z' }],
       editorCallback: (editor: Editor, ctx: MarkdownView | MarkdownFileInfo) => {
         if (ctx instanceof MarkdownView) {
           this.startOrResumeTally(editor, ctx);

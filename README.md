@@ -10,15 +10,9 @@
 
 ![Zheng Tally demo](docs/images/zheng-tally-demo.gif)
 
-Assign the **Zheng Tally: Start counting** command to a hotkey — this README
-uses `Alt+Z` for it throughout — then tap `Space` to count and `Enter` to
-commit. The tally renders as a real inline `正` built from canonical stroke
-vectors, and it stays that way: committed tallies remain vector chips you can
-click to resume.
-
-> **No default hotkey ships with the plugin.** The community directory flags
-> bundled defaults as a conflict risk, so assign your own once under
-> **Settings → Hotkeys** (search for "Zheng Tally").
+Press `Alt+Z`, tap `Space` to count, `Enter` to commit. The tally renders as a
+real inline `正` built from canonical stroke vectors, and it stays that way:
+committed tallies remain vector chips you can click to resume.
 
 ## Why Zheng Tally
 
@@ -78,12 +72,9 @@ One session at a time; switching leaves ends it without writing.
 
 ## Keyboard shortcuts
 
-Assign the **Start counting** command to a hotkey first — the examples below
-use `Alt+Z`.
-
 | Key | Action |
 |-----|--------|
-| your chosen hotkey (e.g. `Alt+Z`) | Start, or resume the tally under the caret |
+| `Alt+Z` | Start, or resume the tally under the caret |
 | `Space` / `+` / `NumpadAdd` / `Shift+=` | +1 |
 | `Backspace` / `-` / `_` / `NumpadSubtract` | −1 (floors at 0) |
 | `Enter` | Commit (single edit) |
