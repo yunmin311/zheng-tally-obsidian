@@ -3,6 +3,11 @@ import { Decoration, ViewPlugin, WidgetType, type EditorView } from '@codemirror
 import type { Plugin } from 'obsidian';
 import { parseMarkedTallies } from './tally-state';
 
+// `createEl` is an Obsidian global (declared in obsidian.d.ts under
+// `declare global`), not a module export — it is preferred over
+// `document.createElement` because it targets the correct window, which
+// matters inside pop-out windows.
+
 export interface StableToken {
   from: number;
   to: number;
@@ -79,7 +84,7 @@ export class CountBadge extends WidgetType {
   }
 
   toDOM(): HTMLElement {
-    const el = document.createElement('span');
+    const el = createEl('span');
     el.className = 'zt-count-badge';
     el.setAttribute('data-count', String(this.count));
     el.title = `tally count: ${this.count}`;
@@ -203,16 +208,18 @@ function placePopup(view: EditorView, popup: HTMLElement, token: StableToken): v
   popup.title = `tally count: ${token.count}`;
   if (coords) {
     popup.style.left = `${Math.round(coords.left)}px`;
-    // Anchor above the token rect with a small gap.
+    // Anchor above the token rect with a small gap. The upward offset itself
+    // is the `transform` on `.zt-count-badge-popup` in styles.css.
     popup.style.top = `${Math.round(coords.top)}px`;
-    popup.style.transform = 'translate(0, -110%)';
   }
 }
 
 const hoverViewPlugin = ViewPlugin.fromClass(
   class {
     popup: HTMLElement | null = null;
-    placeTimer: ReturnType<typeof setTimeout> | null = null;
+    // `window.setTimeout` (not the bare global) for pop-out window support,
+    // which returns a number rather than Node's Timeout object.
+    placeTimer: number | null = null;
     constructor(_view: EditorView) {
       // Popup is created lazily on first active token; never in layout.
     }
@@ -240,11 +247,9 @@ const hoverViewPlugin = ViewPlugin.fromClass(
           this.popup = new CountBadge(token.count).toDOM();
           this.popup.classList.add('zt-count-badge-popup');
           this.popup.setAttribute('data-transient', 'overlay');
-          // Overlay positioning: out of editor layout entirely.
-          this.popup.style.position = 'fixed';
-          this.popup.style.zIndex = '1000';
-          this.popup.style.pointerEvents = 'none';
-          this.popup.style.margin = '0';
+          // Overlay positioning (fixed / z-index / pointer-events / margin)
+          // lives on `.zt-count-badge-popup` in styles.css so it stays out of
+          // editor layout. Only the coordinates are written per element below.
           document.body.appendChild(this.popup);
         }
         this.popup.textContent = String(token.count);
@@ -260,14 +265,14 @@ const hoverViewPlugin = ViewPlugin.fromClass(
 
     schedulePlace(view: EditorView, token: StableToken): void {
       try {
-        if (this.placeTimer !== null) clearTimeout(this.placeTimer);
+        if (this.placeTimer !== null) window.clearTimeout(this.placeTimer);
       } catch {
         // Ignore timer races.
       }
       const popup = this.popup;
       if (!popup) return;
       try {
-        this.placeTimer = setTimeout(() => {
+        this.placeTimer = window.setTimeout(() => {
           this.placeTimer = null;
           try {
             if (this.popup !== popup || !popup.parentNode) return;
@@ -284,7 +289,7 @@ const hoverViewPlugin = ViewPlugin.fromClass(
     hide(): void {
       try {
         if (this.placeTimer !== null) {
-          clearTimeout(this.placeTimer);
+          window.clearTimeout(this.placeTimer);
           this.placeTimer = null;
         }
       } catch {

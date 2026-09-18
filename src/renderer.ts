@@ -45,9 +45,21 @@ export function readHostTypography(dom: HTMLElement): ZhengTypography | null {
   }
 }
 
-export function applyTypography(el: HTMLElement, typo: ZhengTypography): void {
+/**
+ * Copies the host editor's typography onto a generated element.
+ *
+ * `opts.fontSize === false` skips font size so a CSS class can own it: an
+ * inline font-size would otherwise beat the class (inline always wins), and
+ * elements like the total-count suffix deliberately scale relative to the
+ * chip rather than matching the editor font.
+ */
+export function applyTypography(
+  el: HTMLElement,
+  typo: ZhengTypography,
+  opts?: { fontSize?: boolean },
+): void {
   el.style.fontFamily = typo.fontFamily;
-  el.style.fontSize = typo.fontSize;
+  if (opts?.fontSize !== false) el.style.fontSize = typo.fontSize;
   el.style.fontWeight = typo.fontWeight;
   el.style.fontStyle = typo.fontStyle;
   el.style.color = typo.color;
@@ -63,7 +75,7 @@ export function applyTypography(el: HTMLElement, typo: ZhengTypography): void {
  */
 export function buildVectorGlyph(shownStrokes: number, typo: ZhengTypography): HTMLElement {
   const clamped = Math.max(0, Math.min(ZHENG_STROKES.length, Math.floor(shownStrokes)));
-  const cell = document.createElement('span');
+  const cell = createEl('span');
   cell.className = 'zt-glyph';
   cell.setAttribute('data-strokes', String(clamped));
   cell.style.cssText = `
@@ -74,7 +86,7 @@ export function buildVectorGlyph(shownStrokes: number, typo: ZhengTypography): H
   `;
   applyTypography(cell, typo);
 
-  const native = document.createElement('span');
+  const native = createEl('span');
   native.className = 'zt-native zt-native-sizing';
   native.setAttribute('aria-hidden', 'true');
   native.textContent = '正';
@@ -119,7 +131,7 @@ export function buildVectorGlyph(shownStrokes: number, typo: ZhengTypography): H
 }
 
 function buildEllipsis(typo: ZhengTypography): HTMLElement {
-  const el = document.createElement('span');
+  const el = createEl('span');
   el.className = 'zt-ellipsis';
   el.textContent = '…';
   el.style.cssText = `
@@ -131,14 +143,13 @@ function buildEllipsis(typo: ZhengTypography): HTMLElement {
 }
 
 function buildTotalCount(count: number, typo: ZhengTypography): HTMLElement {
-  const el = document.createElement('span');
+  const el = createEl('span');
   el.className = 'zt-total';
   el.textContent = String(count);
-  applyTypography(el, typo);
-  el.style.fontSize = '0.75em';
-  el.style.opacity = '0.65';
-  el.style.fontVariantNumeric = 'tabular-nums';
-  el.style.background = 'transparent';
+  // Size, opacity and tabular figures come from `.zt-total` in styles.css.
+  // Font size is intentionally left to the class so it stays relative to the
+  // chip (0.75em of the editor font) instead of being pinned inline.
+  applyTypography(el, typo, { fontSize: false });
   return el;
 }
 
@@ -149,7 +160,7 @@ function appendGlyph(
   index: number,
   typo: ZhengTypography,
 ): void {
-  const span = document.createElement('span');
+  const span = createEl('span');
   span.className = 'zt-tally';
   if (full) span.setAttribute('data-full', 'true');
   span.setAttribute('data-state', full ? '5' : String(shownStrokes));
@@ -160,7 +171,6 @@ function appendGlyph(
     background: transparent;
   `;
   applyTypography(span, typo);
-  span.style.background = 'transparent';
   span.appendChild(buildVectorGlyph(shownStrokes, typo));
   container.appendChild(span);
 }
@@ -191,7 +201,7 @@ export function buildTallyChip(
 ): HTMLElement {
   const safe = Math.max(0, Math.floor(count));
   const persisted = mode === 'persisted';
-  const chip = document.createElement('span');
+  const chip = createEl('span');
   chip.className = 'zheng-tally-inline';
   chip.setAttribute('data-inline-widget', 'true');
   chip.setAttribute('data-count', String(safe));
@@ -210,7 +220,7 @@ export function buildTallyChip(
   `;
   applyTypography(chip, typo);
 
-  const preview = document.createElement('span');
+  const preview = createEl('span');
   preview.className = 'zt-preview';
   preview.style.cssText = `
     display: inline-flex;
@@ -239,7 +249,9 @@ export function buildTallyChip(
   }
   chip.appendChild(preview);
   const totalEl = buildTotalCount(safe, typo);
-  if (persisted && !showTotal) totalEl.style.visibility = 'hidden';
+  // Committed tallies hide the running total until hover/selection; the rule
+  // is `.zt-total--hidden` in styles.css and is toggled from persistent-tally.
+  if (persisted && !showTotal) totalEl.classList.add('zt-total--hidden');
   chip.appendChild(totalEl);
   if (onClick) {
     chip.addEventListener('click', () => {
@@ -256,7 +268,7 @@ export function buildTallyChip(
  */
 export function buildFallbackChip(count: number, typo: ZhengTypography): HTMLElement {
   const safe = Math.max(0, Math.floor(count));
-  const chip = document.createElement('span');
+  const chip = createEl('span');
   chip.className = 'zheng-tally-inline';
   chip.setAttribute('data-inline-widget', 'true');
   chip.setAttribute('data-fallback', 'text');
@@ -284,7 +296,7 @@ export function buildFallbackChip(count: number, typo: ZhengTypography): HTMLEle
  */
 export function createFallbackOverlayRenderer(typo: ZhengTypography): InlineTallyRenderer {
   let clickCallback: (() => void) | null = null;
-  const root = document.createElement('div');
+  const root = createDiv();
   root.className = 'zheng-tally-overlay';
   root.setAttribute('data-fallback-mode', 'fixed');
   root.style.cssText = `
@@ -293,7 +305,7 @@ export function createFallbackOverlayRenderer(typo: ZhengTypography): InlineTall
     pointer-events: none;
     font-family: inherit;
   `;
-  const inner = document.createElement('div');
+  const inner = createDiv();
   inner.style.cssText = `
     display: inline-flex;
     align-items: center;
@@ -307,7 +319,7 @@ export function createFallbackOverlayRenderer(typo: ZhengTypography): InlineTall
     white-space: nowrap;
   `;
   applyTypography(inner, typo);
-  const label = document.createElement('span');
+  const label = createEl('span');
   label.textContent = '[tally]';
   applyTypography(label, typo);
   inner.appendChild(label);

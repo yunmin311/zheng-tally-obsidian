@@ -7,6 +7,17 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const isProduction = process.argv.includes('--production');
 const isWatch = process.argv.includes('--watch');
 
+/**
+ * Copies the files esbuild does not process into dist/, so dist/ is a complete
+ * installable plugin folder (and the folder sync-plugins.ps1 ships to the vault).
+ * styles.css is skipped when absent — not every build needs one.
+ */
+function stageStaticAssets(outDir) {
+  copyFileSync(join(__dirname, 'manifest.json'), join(outDir, 'manifest.json'));
+  const styles = join(__dirname, 'styles.css');
+  if (existsSync(styles)) copyFileSync(styles, join(outDir, 'styles.css'));
+}
+
 async function buildPlugin() {
   const outDir = join(__dirname, 'dist');
   if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
@@ -24,7 +35,7 @@ async function buildPlugin() {
       minify: isProduction,
     });
     await ctx.watch();
-    copyFileSync(join(__dirname, 'manifest.json'), join(outDir, 'manifest.json'));
+    stageStaticAssets(outDir);
     console.log('Watching for changes...');
   } else {
     await build({
@@ -38,7 +49,7 @@ async function buildPlugin() {
       sourcemap: true,
       minify: isProduction,
     });
-    copyFileSync(join(__dirname, 'manifest.json'), join(outDir, 'manifest.json'));
+    stageStaticAssets(outDir);
     console.log(`Build ${isProduction ? 'production' : 'development'} complete`);
   }
 }

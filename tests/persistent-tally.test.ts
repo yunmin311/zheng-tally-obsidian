@@ -135,10 +135,12 @@ describe('persistent-tally: persisted chip reuses canonical vectors', () => {
     const el = persistedChip(18);
     expect(el.getAttribute('data-mode')).toBe('persisted');
     expect(el.getAttribute('data-count')).toBe('18');
-    expect((el.querySelector('.zt-total') as HTMLElement).style.visibility).toBe('hidden');
+    // Hidden via the `.zt-total--hidden` class (styles.css), not an inline
+    // style — inline assignments are rejected by the directory review.
+    expect(el.querySelector('.zt-total')?.classList.contains('zt-total--hidden')).toBe(true);
     const active = buildTallyChip(18, typo(), null);
     expect(active.getAttribute('data-mode')).toBe('active');
-    expect((active.querySelector('.zt-total') as HTMLElement).style.visibility).not.toBe('hidden');
+    expect(active.querySelector('.zt-total')?.classList.contains('zt-total--hidden')).toBe(false);
     expect(active.querySelectorAll('.zt-glyph').length).toBe(el.querySelectorAll('.zt-glyph').length);
   });
 });

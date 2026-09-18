@@ -122,7 +122,9 @@ class PersistentTallyWidget extends WidgetType {
     const total = el.querySelector('.zt-total');
     const syncTotal = (visible: boolean): void => {
       try {
-        if (total) (total as HTMLElement).style.visibility = visible ? 'visible' : 'hidden';
+        // Same mechanism the build step uses (`.zt-total--hidden` in
+        // styles.css), so hover/selection never fights an inline value.
+        if (total) total.classList.toggle('zt-total--hidden', !visible);
       } catch {
         // Ignore teardown races.
       }

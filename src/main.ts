@@ -26,9 +26,11 @@ export default class ZhengTallyPlugin extends Plugin {
     this.addCommand({
       // NOTE: Obsidian prefixes command IDs with the plugin ID automatically,
       // so the bare `start` ID is a submission-compliance requirement.
+      // The name must not repeat the plugin name (Obsidian already shows it
+      // beside the command), and no default hotkey ships with the plugin —
+      // see the README for how to assign one.
       id: 'start',
-      name: 'Start Zheng Tally counting',
-      hotkeys: [{ modifiers: ['Alt'], key: 'z' }],
+      name: 'Start counting',
       editorCallback: (editor: Editor, ctx: MarkdownView | MarkdownFileInfo) => {
         if (ctx instanceof MarkdownView) {
           this.startOrResumeTally(editor, ctx);
