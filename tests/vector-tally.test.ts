@@ -131,12 +131,37 @@ describe('vector-tally: large-count behavior', () => {
     expect(chip.getAttribute('data-count')).toBe('83');
   });
 
-  test('count total styling contracts (0.72-0.78em, dimmed, tabular, themed)', () => {
+  test('count total styling lives in styles.css, not inline', () => {
     const chip = buildTallyChip(18, typo(), null);
     const total = chip.querySelector('.zt-total') as HTMLElement;
-    expect(total.style.fontSize).toBe('0.75em');
-    expect(Number.parseFloat(total.style.opacity)).toBeLessThan(0.8);
-    expect(total.style.fontVariantNumeric).toContain('tabular-nums');
+    expect(total.classList.contains('zt-total')).toBe(true);
+
+    // The community-directory review rejects per-element style assignments
+    // (obsidianmd/no-static-styles-assignment), so these must stay empty and
+    // the values must come from the class instead.
+    expect(total.style.fontSize).toBe('');
+    expect(total.style.opacity).toBe('');
+    expect(total.style.fontVariantNumeric).toBe('');
+
+    // Read the shipped stylesheet so silently dropping the rules fails loudly.
+    const css = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8');
+    const start = css.indexOf('.zt-total {');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const rule = css.slice(start, css.indexOf('}', start));
+    expect(rule).toContain('font-size: 0.75em');
+    expect(rule).toMatch(/opacity:\s*0\.[67]/);
+    expect(rule).toContain('font-variant-numeric: tabular-nums');
+  });
+
+  test('styling is class-driven, with no inline font-size on the total', () => {
+    // The total scales relative to the chip, so applyTypography must not pin
+    // an inline font-size that would beat the class.
+    const chip = buildTallyChip(18, typo({ fontSize: '24px' }), null);
+    const total = chip.querySelector('.zt-total') as HTMLElement;
+    expect(total.style.fontSize).toBe('');
+    // Other typography is still inherited from the host editor.
+    expect(total.style.fontFamily).toBe('SimSun, serif');
+    expect(total.style.color).toBe('rgb(0, 0, 0)');
   });
 
   test('floors at zero, no negative groups', () => {

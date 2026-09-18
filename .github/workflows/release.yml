@@ -1,0 +1,62 @@
+name: Release plugin
+
+on:
+  push:
+    tags: ["*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # tag 必须与 manifest.json 里的 version 完全一致 —— 这是 Obsidian
+      # 社区目录安装插件的唯一依据：它拿 manifest 的 version 去找同名 Release。
+      # 写成 v1.0.0 或 1.0.0-beta 都会让目录找不到，所以这里硬校验、对不上直接失败。
+      - name: Version must match tag
+        run: |
+          version=$(node -p "require('./manifest.json').version")
+          tag="${GITHUB_REF_NAME}"
+          if [ "$version" != "$tag" ]; then
+            echo "::error::tag '$tag' 与 manifest.json 的 version '$version' 不一致"
+            echo "修正方式：要么改 manifest 版本号，要么删掉这个 tag 重打。"
+            exit 1
+          fi
+
+      # 与其他三个插件仓库不同：本仓库源码在 src/，发布产物是 esbuild 打出的
+      # dist/main.js，而 dist/ 不进版本控制 —— 所以必须在打包机上现构建，
+      # 不能像纯 JS 插件那样直接从仓库根取 main.js。
+      - name: Build
+        run: npm run build
+
+      - name: Bundle must exist and be non-empty
+        run: test -s dist/main.js
+
+      # 目录是按文件名下载资产的，所以必须叫 main.js：把构建产物复制到根再挂。
+      # styles.css 按需传入（Obsidian 会跳过缺失的那个，不算错误）。
+      - name: Collect assets
+        id: assets
+        run: |
+          cp dist/main.js ./main.js
+          files="manifest.json main.js"
+          [ -f styles.css ] && files="$files styles.css"
+          echo "files=$files" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            ${{ steps.assets.outputs.files }}

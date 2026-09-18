@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.0.2
+
+Community-directory review fixes — no change to tally behavior, persistence,
+rendering, or the keyboard controls themselves.
+
+- Manifest description no longer contains the word "Obsidian" (the directory
+  treats it as redundant, since the context already implies it)
+- Styling moved out of per-element style assignments into `styles.css`
+  (`.zt-total`, `.zt-total--hidden`, `.zt-count-badge-popup`), as required by
+  `obsidianmd/no-static-styles-assignment`. Values are CSS-driven now, so the
+  chip also became themeable. Chip typography still follows the host editor
+  because it is read at render time
+- `document.createElement` replaced with Obsidian's `createEl`/`createDiv`
+  helpers, which resolve against the correct window in pop-out windows
+- `window.setTimeout` / `window.clearTimeout` used for the same reason
+- Removed the bundled default `Alt+Z` hotkey: the directory flags default
+  hotkeys as a conflict risk. Assign it once under Settings → Hotkeys
+  (search "Zheng Tally") — see the README
+- Command renamed `Start Zheng Tally counting` → `Start counting`, since
+  Obsidian already shows the plugin name beside the command
+
 ## 1.0.1
 
 - Obsidian Community Directory submission compliance

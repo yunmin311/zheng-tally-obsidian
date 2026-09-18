@@ -105,10 +105,17 @@ export function createEditorSession(deps: SessionDependencies): EditorSession {
   }
 
   function renderChip(count: number): HTMLElement {
-    const typo =
-      currentTypo() ??
-      baseTypo ??
-      ({ fontFamily: 'serif', fontSize: '16px', fontWeight: '400', fontStyle: 'normal', color: 'rgb(0,0,0)', devicePixelRatio: 1 } as ZhengTypography);
+    // Last-ditch literal already satisfies ZhengTypography — no assertion
+    // needed (an unnecessary `as` is flagged by the directory review).
+    const typo = currentTypo() ??
+      baseTypo ?? {
+        fontFamily: 'serif',
+        fontSize: '16px',
+        fontWeight: '400',
+        fontStyle: 'normal',
+        color: 'rgb(0,0,0)',
+        devicePixelRatio: 1,
+      };
     return buildTallyChip(count, typo, () => {
       if (state && isActive && cmView && anchorOffset !== null) {
         state.increment();

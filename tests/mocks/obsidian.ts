@@ -1,3 +1,13 @@
+// Obsidian's DOM helpers. In the app these are real Obsidian APIs that know
+// about pop-out windows; under jsdom a plain document is the correct stand-in.
+export function createEl<K extends keyof HTMLElementTagNameMap>(tag: K): HTMLElementTagNameMap[K] {
+  return document.createElement(tag);
+}
+
+export function createDiv(): HTMLDivElement {
+  return document.createElement('div');
+}
+
 // Mock Component class for testing (mimics Obsidian's official Component API)
 export class Component {
   private events: Array<{ off: () => void }> = [];
