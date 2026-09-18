@@ -15,11 +15,12 @@ rendering, or the keyboard controls themselves.
 - `document.createElement` replaced with Obsidian's `createEl`/`createDiv`
   helpers, which resolve against the correct window in pop-out windows
 - `window.setTimeout` / `window.clearTimeout` used for the same reason
-- Removed the bundled default `Alt+Z` hotkey: the directory flags default
-  hotkeys as a conflict risk. Assign it once under Settings → Hotkeys
-  (search "Zheng Tally") — see the README
 - Command renamed `Start Zheng Tally counting` → `Start counting`, since
   Obsidian already shows the plugin name beside the command
+- The default `Alt+Z` hotkey is **kept on purpose**. The review lists it as a
+  Warning (a possible conflict), not an Error, and shipping with no way to start
+  a tally is worse than the warning — `Alt+Z` clashes with no Obsidian default,
+  and it can be rebound under Settings → Hotkeys
 
 ## 1.0.1
 
