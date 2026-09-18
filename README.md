@@ -86,7 +86,10 @@ One session at a time; switching leaves ends it without writing.
 
 Committed tallies keep rendering as vector chips — same strokes, same metrics,
 quieter chrome — across note reopens, plugin reloads, and restarts, derived
-purely from the note text.
+purely from the note text. This holds in **reading view too** (`src/reading-tally.ts`):
+a `registerMarkdownPostProcessor` pass renders the chip there, because the
+editor's CodeMirror decorations never reach Obsidian's MarkdownRenderer.
+Reading-view chips are read-only; counting stays an editor action.
 
 - **Resume** from the stored total (18 → 19), never from zero.
 - **Resume + `Enter`** rewrites text + marker in one edit

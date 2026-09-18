@@ -8,6 +8,7 @@ import {
   findResumeToken,
   type ResumeToken,
 } from './persistent-tally';
+import { registerReadingTallies } from './reading-tally';
 
 export default class ZhengTallyPlugin extends Plugin {
   declare settings: Settings;
@@ -22,6 +23,10 @@ export default class ZhengTallyPlugin extends Plugin {
         this.resumeTallyFromChip(token);
       }),
     );
+    // Reading view renders committed tallies through a post processor, not
+    // CodeMirror: editor decorations never reach MarkdownRenderer, so without
+    // this a committed tally showed its raw visible text (e.g. a stray "·3").
+    registerReadingTallies(this);
 
     this.addCommand({
       // NOTE: Obsidian prefixes command IDs with the plugin ID automatically,
