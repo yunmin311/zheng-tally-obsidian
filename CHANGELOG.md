@@ -1,5 +1,49 @@
 # Changelog
 
+## 1.0.5
+
+- **Fixed for real: committed tallies in reading view.** 1.0.3 and 1.0.4 both
+  failed on this, and both failed for the same reason — they were looking for
+  something the reading view had already thrown away.
+  - **The root cause.** Reading view passes its HTML through a bundled
+    DOMPurify that carries no `ALLOW_COMMENTS` option, so **every HTML comment
+    is stripped** before any Markdown post processor runs. By the time this
+    plugin sees the DOM, `<!--zt:12-->` is gone and only the visible half
+    (`·2`) is left. The earlier passes scanned for a comment node, and then for
+    a literal marker inside a text node; in reading view neither can ever
+    exist. That is also why editing mode was always fine: CodeMirror
+    decorations read the *document string*, where the marker is intact.
+  - **The count cannot be recovered from the visible half.** `·2` means
+    "0 full strokes + 2" — it is not a number, and `正正·1` and `正正·1` are
+    indistinguishable in the DOM even when they hold different counts.
+  - **The fix.** The block's **original Markdown source** is read back through
+    `ctx.getSectionInfo(el).text`, which predates the sanitizer and still holds
+    the markers. Markers are parsed out of the source and paired to the DOM
+    text nodes that render their visible halves, using the surrounding source
+    text as context so two tallies with an identical visible half get their own
+    counts. Pairing falls back to front-to-back order when the context does not
+    line up, and the ownership check still fails closed — an unverifiable
+    tally stays plain text rather than rendering a wrong number.
+  - The two previous passes are retained as harmless no-ops for hosts that do
+    preserve comments or literal markers.
+- 10 new tests (168 total), including the reported `homepage.md` case and a
+  duplicate-visible-half case.
+
+## 1.0.4
+
+- **Fixed: some committed tallies still did not render in reading view.**
+  1.0.3 shipped the post processor, but two cases slipped through:
+  - **A trailing space before the marker.** The tail matcher was anchored with
+    `$` and did not tolerate whitespace, so a soft line break rendered as a
+    trailing space and the tally was rejected. The matcher now allows trailing
+    whitespace (`\s*`) — the author did not mean anything by it.
+  - **An inline `<code>` elsewhere in the same paragraph.** The skip check
+    walked *all* ancestors, so an unrelated code span in a sibling branch
+    vetoed the tally. The check now stops at the parent that contains the
+    marker's sibling, which is the only container the two actually share.
+    A tally that genuinely lives inside `<code>` or `<pre>` is still skipped.
+- Both cases are covered by regression tests.
+
 ## 1.0.3
 
 - **Committed tallies now render in reading view.** Every other renderer in
