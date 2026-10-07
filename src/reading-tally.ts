@@ -1,6 +1,7 @@
 import type { Plugin } from 'obsidian';
 import { buildTallyChip, readHostTypography, type ZhengTypography } from './renderer';
 import { parseMarkedTallies, stableTextForCount } from './tally-state';
+import { alignedReadingHits, isReadingAlignmentDelimiter } from './reading-source';
 
 /**
  * Reading-view rendering for committed tallies.
@@ -28,14 +29,12 @@ import { parseMarkedTallies, stableTextForCount } from './tally-state';
  * decorations read the *document string*, where the marker is intact.
  *
  * The only surviving source of the count is therefore the **original Markdown
- * source of the block**, which Obsidian exposes through
- * `ctx.getSectionInfo(el).text` — that text predates the sanitizer. So this
- * module's primary pass reads the source, parses the markers out of it, and
- * then pairs each marker with the DOM text node that renders its visible half.
+ * source**, which Obsidian exposes through `ctx.getSectionInfo(el)`.
+ * Its `text` is the whole document, so first limit it with lineStart/lineEnd.
+ * Then align complete rendered section text with source marker positions.
  *
- * Note that the count cannot be recovered from the visible half alone: `·3`
- * means "0 full strokes + 3", it is not a number. Losing the marker means
- * losing the data, which is exactly why the source text is consulted.
+ * Visible tally text alone does not prove plugin ownership: an ordinary 正
+ * must never become a tally because a different source occurrence is marked.
  */
 
 /** Same shape as the one in persistent-tally.ts; duplicated rather than shared
@@ -95,119 +94,6 @@ function isSkipped(node: Node | null, scope: 'text' | 'sibling' = 'text'): boole
     cur = cur.parentNode;
   }
   return false;
-}
-
-/** Text between two markers, collapsed the way a renderer would collapse it.
- *  Obsidian trims/collapses runs of whitespace inside a paragraph, and the DOM
- *  text node has already been through that, so the source side must be
- *  normalized the same way before the two can be compared. */
-function normalizeForMatch(text: string): string {
-  return text.replace(/\s+/g, ' ');
-}
-
-/** How much surrounding source text to compare when pairing a marker with the
- *  DOM node that renders its visible half. Long enough to stay unique inside a
- *  block, short enough that formatting characters near the tally (bold markers,
- *  escaped punctuation) do not force a mismatch. */
-const CONTEXT_CHARS = 24;
-
-/**
- * Build the pairing key for one marker.
- *
- * A short line is padded rather than truncated: `早：正正·1` and `晚：正正·1`
- * both have a preceding fragment shorter than CONTEXT_CHARS, so taking the last
- * N characters of each would hand them the *same* key and the wrong count would
- * be shown. Anchoring the key at the start of the line keeps them distinct,
- * while the trailing N characters still absorb edits immediately before the
- * tally (`## 进度` vs `进度`).
- */
-function contextKey(visible: string, before: string): string {
-  const text = normalizeForMatch(before);
-  const head = text.length <= CONTEXT_CHARS ? text : '';
-  const tail = text.slice(-CONTEXT_CHARS);
-  return `${visible}\u0000${head}\u0000${tail}`;
-}
-
-/** The key a DOM text node's preceding text maps to. */
-function keyForVisible(visible: string, textBefore: string): string[] {
-  const text = normalizeForMatch(textBefore);
-  const tail = text.slice(-CONTEXT_CHARS);
-  // A too-short prefix is not a reliable anchor on its own, so the lookup also
-  // accepts the tail-only key. Long prefixes produce their own exact key.
-  return text.length <= CONTEXT_CHARS
-    ? [`${visible}\u0000${text}\u0000${tail}`]
-    : [`${visible}\u0000\u0000${tail}`];
-}
-
-/** Strip Markdown inline syntax that never reaches the DOM. Only the pieces
- *  commonly interleaved with prose tallies are handled: emphasis markers and
- *  backslash escapes. Anything left over simply fails to match, which fails
- *  closed — the tally stays as plain text rather than rendering wrongly. */
-function stripInlineSyntax(text: string): string {
-  return text
-    .replace(/\\([\\`*_{}[\]()#+\-.!])/g, '$1')
-    .replace(/[*_~`]+/g, '');
-}
-
-/**
- * Build a lookup from "visible half + nearby source context" to the count.
- *
- * Binding on context rather than on order alone matters because a block can
- * contain several tallies with the *same* visible half but different counts —
- * `正正·1<!--zt:6-->` and `正正·1<!--zt:11-->` render identically in the DOM.
- * Positional pairing alone would have no way to tell them apart, and would
- * silently render the wrong total on hover. The context string restores the
- * distinction.
- */
-export function buildMarkerIndex(sectionText: string): Map<string, number[]> {
-  const index = new Map<string, number[]>();
-  const tokens = parseMarkedTallies(sectionText, 0);
-  for (const token of tokens) {
-    const visible = stableTextForCount(token.count);
-    if (!visible) continue;
-    const before = stripInlineSyntax(
-      sectionText.slice(Math.max(0, token.from - CONTEXT_CHARS * 2), token.from),
-    );
-    const key = contextKey(visible, before);
-    const bucket = index.get(key);
-    if (bucket) bucket.push(token.count);
-    else index.set(key, [token.count]);
-  }
-  return index;
-}
-
-/**
- * Look a DOM text node up in the marker index.
- *
- * Tries the anchored key first (short prefix, exact match) and then the
- * tail-only key, so a tally whose preceding text was rewritten by the renderer
- * still finds its count. Returns `null` when nothing verified matches — the
- * caller must then leave the text alone.
- */
-function lookupCount(
-  index: Map<string, number[]>,
-  visible: string,
-  textBefore: string,
-): number | null {
-  for (const key of keyForVisible(visible, textBefore)) {
-    const bucket = index.get(key);
-    if (!bucket || bucket.length === 0) continue;
-    const count = bucket.shift() as number;
-    if (bucket.length === 0) index.delete(key);
-    return count;
-  }
-  // Context did not line up at all — Obsidian may have resolved a link, an
-  // emoji shortcode or a footnote just before the tally. Fall back to "the
-  // next unconsumed marker with this visible half", which is still
-  // order-correct because markers and DOM nodes are both walked front to back.
-  for (const [key, bucket] of index) {
-    if (bucket.length === 0) continue;
-    if (!key.startsWith(`${visible}\u0000`)) continue;
-    const count = bucket.shift() as number;
-    if (bucket.length === 0) index.delete(key);
-    return count;
-  }
-  return null;
 }
 
 /**
@@ -276,26 +162,40 @@ function renderFromSource(
   sectionText: string,
   typo: ZhengTypography,
   showTotal: boolean,
+  exactSection: boolean,
 ): void {
-  const index = buildMarkerIndex(sectionText);
-  if (index.size === 0) return;
-
-  for (const textNode of collectTextNodes(root)) {
-    try {
-      if (isSkipped(textNode)) continue;
-      const value = textNode.nodeValue ?? '';
-      const m = VISIBLE_TAIL_RE.exec(value);
-      if (!m) continue;
-      const visible = m[1];
-      const parent = textNode.parentNode;
-      if (!parent) continue;
-      const count = lookupCount(index, visible, value.slice(0, m.index));
-      if (count === null) continue;
-      const chip = buildChip(count, typo, showTotal);
-      swapIn(parent, textNode, value.slice(0, m.index), chip);
-    } catch {
-      // Fail closed: a skipped tally renders as plain text.
+  if (root.querySelector('.zheng-tally-inline')) return;
+  const nodes = collectTextNodes(root);
+  const positions: { node: Text; offset: number }[] = [];
+  let text = '';
+  for (const node of nodes) {
+    const value = node.nodeValue ?? '';
+    for (let offset = 0; offset < value.length; offset++) {
+      if (isReadingAlignmentDelimiter(value[offset])) continue;
+      positions.push({ node, offset });
+      text += value[offset];
     }
+  }
+  const edits = new Map<Text, { from: number; to: number; count: number }[]>();
+  for (const hit of alignedReadingHits(sectionText, text, exactSection)) {
+    const first = positions[hit.from], last = positions[hit.to - 1];
+    if (!first || !last || first.node !== last.node || isSkipped(first.node)) continue;
+    if (first.node.nodeValue?.slice(first.offset, last.offset + 1) !== stableTextForCount(hit.count)) continue;
+    const bucket = edits.get(first.node) ?? [];
+    bucket.push({ from: first.offset, to: last.offset + 1, count: hit.count });
+    edits.set(first.node, bucket);
+  }
+  const doc = root.ownerDocument ?? document;
+  for (const [node, hits] of edits) {
+    const value = node.nodeValue ?? '', frag = doc.createDocumentFragment();
+    let cursor = 0;
+    for (const hit of hits) {
+      frag.appendChild(doc.createTextNode(value.slice(cursor, hit.from)));
+      frag.appendChild(buildChip(hit.count, typo, showTotal));
+      cursor = hit.to;
+    }
+    frag.appendChild(doc.createTextNode(value.slice(cursor)));
+    node.parentNode?.replaceChild(frag, node);
   }
 }
 
@@ -389,6 +289,7 @@ export function renderTalliesInElement(
   root: HTMLElement,
   showTotal = true,
   sectionText?: string | null,
+  exactSection = false,
 ): void {
   let typo: ZhengTypography | null = null;
   try {
@@ -400,7 +301,7 @@ export function renderTalliesInElement(
 
   if (sectionText) {
     try {
-      renderFromSource(root, sectionText, resolved, showTotal);
+      renderFromSource(root, sectionText, resolved, showTotal, exactSection);
     } catch {
       // Fail closed.
     }
@@ -425,11 +326,15 @@ export function registerReadingTallies(plugin: Plugin, showTotal = true): void {
         let sectionText: string | null = null;
         try {
           const info = ctx?.getSectionInfo?.(el);
-          if (info && typeof info.text === 'string') sectionText = info.text;
+          if (info && typeof info.text === 'string' && Number.isInteger(info.lineStart)
+              && Number.isInteger(info.lineEnd) && info.lineStart >= 0 && info.lineEnd >= info.lineStart) {
+            const lines = info.text.split(/\r?\n/);
+            if (info.lineEnd < lines.length) sectionText = lines.slice(info.lineStart, info.lineEnd + 1).join('\n');
+          }
         } catch {
           sectionText = null;
         }
-        renderTalliesInElement(el, showTotal, sectionText);
+        renderTalliesInElement(el, showTotal, sectionText, true);
       } catch {
         // A post processor must never throw into Obsidian's render pipeline.
       }

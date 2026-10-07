@@ -1,6 +1,6 @@
 {
   "name": "zheng-tally-obsidian",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Chinese 正字 tally counting for Obsidian",
   "main": "main.js",
   "scripts": {

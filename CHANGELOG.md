@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.6
+
+- Restrict reading-source lookup to `lineStart`–`lineEnd`; Obsidian's
+  `getSectionInfo().text` contains the complete document, not just that block.
+- Align rendered text with verified marker positions, including ordinary
+  lookalikes; remove the unsafe same-visible-text fallback.
+- Render marked tallies in the middle of text nodes, including consecutive
+  soft-broken lines. Unknown or ambiguous transformations stay plain text.
+- Keep the editing/session/storage code and visual styling unchanged.
+- Require tests, lint and type checking before release builds; never delete
+  an existing release when rerunning the publishing workflow.
+- 阅读显示只读取当前区块，避免把普通「正」字误认成计数；修复段中计数和连续
+  两行计数的显示。无法安全核对时保留原文字，不改用户笔记、配置或其他插件。
+
+Note: the previous 1.0.5 entry overstates its fail-closed guarantee and calls
+the full-document source a block source. Those assumptions are corrected
+above; 1.0.5's published assets remain unchanged.
+
 ## 1.0.5
 
 - **Fixed for real: committed tallies in reading view.** 1.0.3 and 1.0.4 both

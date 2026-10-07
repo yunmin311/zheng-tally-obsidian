@@ -91,6 +91,16 @@ a `registerMarkdownPostProcessor` pass renders the chip there, because the
 editor's CodeMirror decorations never reach Obsidian's MarkdownRenderer.
 Reading-view chips are read-only; counting stays an editor action.
 
+Reading rendering verifies ownership against the current Markdown section,
+including tallies in the middle of a paragraph. Ordinary unmarked `正` text
+and code are left untouched. If another renderer changes the section so its
+source cannot be safely matched, the tally remains readable plain text.
+Reading rendering never rewrites the note or your settings.
+
+阅读模式按当前区块的源码核对计数归属，也支持段落中间的计数。
+没有标记的普通「正」字和代码不受影响。若其他渲染器改变了内容、无法安全核对，
+则保留可读的原文字，不猜测计数归属，也不改写笔记或设置。
+
 - **Resume** from the stored total (18 → 19), never from zero.
 - **Resume + `Enter`** rewrites text + marker in one edit
   (`正正正正·3<!--zt:23-->`).

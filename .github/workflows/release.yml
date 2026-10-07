@@ -20,6 +20,12 @@ jobs:
 
       - run: npm ci
 
+      - name: Verify before publishing
+        run: |
+          npm test -- --runInBand
+          npm run lint
+          npm run typecheck
+
       # tag 必须与 manifest.json 里的 version 完全一致 —— 这是 Obsidian
       # 社区目录安装插件的唯一依据：它拿 manifest 的 version 去找同名 Release。
       # 写成 v1.0.0 或 1.0.0-beta 都会让目录找不到，所以这里硬校验、对不上直接失败。
@@ -29,7 +35,7 @@ jobs:
           tag="${GITHUB_REF_NAME}"
           if [ "$version" != "$tag" ]; then
             echo "::error::tag '$tag' 与 manifest.json 的 version '$version' 不一致"
-            echo "修正方式：要么改 manifest 版本号，要么删掉这个 tag 重打。"
+            echo "修正方式：使用与 manifest 一致的新版本标签；不要覆盖已发布标签。"
             exit 1
           fi
 
@@ -52,15 +58,16 @@ jobs:
           [ -f styles.css ] && files="$files styles.css"
           echo "files=$files" >> "$GITHUB_OUTPUT"
 
-      # Idempotent: gh release create fails outright if a release with the same
-      # tag already exists, which turns a routine "re-tag and push again" into a
-      # red build. Delete any existing release for this tag first (it may not
-      # exist, hence the `|| true`), so re-running this workflow is safe.
+      # Do not replace assets already downloaded by users. A rerun of an
+      # existing release must stop rather than delete and recreate it.
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete "$GITHUB_REF_NAME" --yes --cleanup-tag=false || true
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "::error::Release already exists; its assets will not be overwritten."
+            exit 1
+          fi
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
