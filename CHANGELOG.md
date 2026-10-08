@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.7
+
+- Replace the HTML-sink-based character-reference decoder with pure text
+  decoding. Reading alignment retains its existing ownership checks without
+  assigning user-derived text to `innerHTML`.
+- Add entity-decoding regression tests and an ESLint guard against HTML-string
+  DOM writes. Generate provenance attestations for future release assets.
+- 修复社区审核阻断项：字符实体解码不再写入 HTML。保留阅读计数核对逻辑，
+  不修改笔记、快捷键、样式、配置或其他插件。
+
 ## 1.0.6
 
 - Restrict reading-source lookup to `lineStart`–`lineEnd`; Obsidian's

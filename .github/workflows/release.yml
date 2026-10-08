@@ -6,6 +6,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   release:
@@ -57,6 +59,14 @@ jobs:
           files="manifest.json main.js"
           [ -f styles.css ] && files="$files styles.css"
           echo "files=$files" >> "$GITHUB_OUTPUT"
+
+      - name: Attest release assets
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: |
+            main.js
+            manifest.json
+            styles.css
 
       # Do not replace assets already downloaded by users. A rerun of an
       # existing release must stop rather than delete and recreate it.

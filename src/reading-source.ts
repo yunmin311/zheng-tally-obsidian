@@ -8,6 +8,33 @@ export function isReadingAlignmentDelimiter(char: string): boolean {
   return /[\s*_~`]/.test(char);
 }
 
+// Decode only the references supported by this conservative projection.
+// Never parse source text as HTML, even in a detached element.
+const namedReferences: Readonly<Record<string, string>> = {
+  amp: '&', AMP: '&', lt: '<', LT: '<', gt: '>', GT: '>',
+  quot: '"', QUOT: '"', apos: "'",
+};
+const legacyNumericReferences: Readonly<Record<number, number>> = {
+  0x80: 0x20ac, 0x82: 0x201a, 0x83: 0x0192, 0x84: 0x201e,
+  0x85: 0x2026, 0x86: 0x2020, 0x87: 0x2021, 0x88: 0x02c6,
+  0x89: 0x2030, 0x8a: 0x0160, 0x8b: 0x2039, 0x8c: 0x0152,
+  0x8e: 0x017d, 0x91: 0x2018, 0x92: 0x2019, 0x93: 0x201c,
+  0x94: 0x201d, 0x95: 0x2022, 0x96: 0x2013, 0x97: 0x2014,
+  0x98: 0x02dc, 0x99: 0x2122, 0x9a: 0x0161, 0x9b: 0x203a,
+  0x9c: 0x0153, 0x9e: 0x017e, 0x9f: 0x0178,
+};
+
+function decodeReference(entity: string): string {
+  const name = entity.slice(1, -1);
+  if (!name.startsWith('#')) return namedReferences[name] ?? entity;
+  const hex = name[1]?.toLowerCase() === 'x';
+  let codePoint = Number.parseInt(name.slice(hex ? 2 : 1), hex ? 16 : 10);
+  if (!Number.isFinite(codePoint) || codePoint === 0 || codePoint > 0x10ffff
+    || (codePoint >= 0xd800 && codePoint <= 0xdfff)) return '\uFFFD';
+  codePoint = legacyNumericReferences[codePoint] ?? codePoint;
+  return String.fromCodePoint(codePoint);
+}
+
 /** Conservative text projection for ownership alignment, not a Markdown
  * renderer. Unsupported transformations fail alignment rather than guess. */
 function project(source: string): string {
@@ -21,11 +48,7 @@ function project(source: string): string {
     .replace(/<[^>]*>/g, '')
     .replace(/\\([\\`*_{}[\]()#+\-.!])/g, '$1')
     .replace(/[*_~`]/g, '')
-    .replace(/&(?:amp|lt|gt|quot|apos|#\d+|#x[\da-f]+);/gi, entity => {
-      const el = document.createElement('textarea');
-      el.innerHTML = entity;
-      return el.value;
-    })
+    .replace(/&(?:amp|lt|gt|quot|apos|#\d+|#x[\da-f]+);/gi, decodeReference)
     .replace(/\s/g, '');
 }
 
