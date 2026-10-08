@@ -13,6 +13,29 @@
     "plugin:@typescript-eslint/recommended-type-checked"
   ],
   "rules": {
+    "no-restricted-syntax": [
+      "error",
+      {
+        "selector": "AssignmentExpression[left.type='MemberExpression'][left.property.name=/^(innerHTML|outerHTML)$/]",
+        "message": "Do not write HTML strings into the DOM; use textContent or explicit elements."
+      },
+      {
+        "selector": "AssignmentExpression[left.type='MemberExpression'][left.property.value=/^(innerHTML|outerHTML)$/]",
+        "message": "Do not write HTML strings into the DOM; use textContent or explicit elements."
+      },
+      {
+        "selector": "CallExpression[callee.type='MemberExpression'][callee.property.name='insertAdjacentHTML']",
+        "message": "Do not use HTML-string injection methods."
+      },
+      {
+        "selector": "CallExpression[callee.type='MemberExpression'][callee.property.value='insertAdjacentHTML']",
+        "message": "Do not use HTML-string injection methods."
+      },
+      {
+        "selector": "CallExpression[callee.type='MemberExpression'][callee.object.name='document'][callee.property.name=/^(write|writeln)$/]",
+        "message": "Do not use HTML-string injection methods."
+      }
+    ],
     "@typescript-eslint/no-explicit-any": "error",
     "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_" }],
     "@typescript-eslint/consistent-type-imports": "error"
